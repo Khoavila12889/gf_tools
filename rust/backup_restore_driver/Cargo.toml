@@ -1,0 +1,19 @@
+[package]
+name = "backup_restore_driver"
+version = "0.1.0"
+edition = "2021"
+description = "QSU Backup/Restore Driver - sao lưu và khôi phục driver thiết bị bằng WMI + pnputil"
+
+[[bin]]
+name = "BackupRestoreDriver"
+path = "src/main.rs"
+
+[dependencies]
+qsu_common = { path = "../qsu_common" }
+native-windows-gui = "1.0"
+unicode-normalization = "0.1"
+winapi = { version = "0.3", features = [
+    "shellapi", "winuser", "winreg", "winerror", "wingdi", "winnt", "commctrl",
+    "combaseapi", "objbase", "oleauto", "oaidl", "wbemcli", "wtypes", "rpcdce",
+    "unknwnbase", "guiddef",
+] }

@@ -1,0 +1,14 @@
+[package]
+name = "cai_dat_win_winpe"
+version = "0.1.0"
+edition = "2021"
+description = "QSU Cài Đặt Win=WinPE - trình cài Windows tương tác chạy trong WinPE: chọn nguồn ISO/WIM, chọn phân vùng đích theo serial, apply image bằng DISM, inject driver, autounattend, bcdboot"
+
+[[bin]]
+name = "CaiDatWinWinPE"
+path = "src/main.rs"
+
+[dependencies]
+qsu_common = { path = "../qsu_common" }
+native-windows-gui = "1.0"
+winapi = { version = "0.3", features = ["shellapi", "winuser", "winreg", "winerror", "winnt", "fileapi", "winbase", "errhandlingapi"] }

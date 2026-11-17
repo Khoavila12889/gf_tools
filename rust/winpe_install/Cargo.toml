@@ -1,0 +1,12 @@
+[package]
+name = "winpe_install"
+version = "0.1.0"
+edition = "2021"
+description = "QSU WinPE installer - chạy trong WinPE: format ổ OS, apply image, inject driver, bcdboot"
+
+[[bin]]
+name = "WinPEInstall"
+path = "src/main.rs"
+
+[dependencies]
+qsu_common = { path = "../qsu_common" }

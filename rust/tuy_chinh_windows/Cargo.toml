@@ -1,0 +1,14 @@
+[package]
+name = "tuy_chinh_windows"
+version = "0.1.0"
+edition = "2021"
+description = "QSU Tuỳ Chỉnh Windows - catalogue tinh chỉnh theo chuẩn Sophia Script (MIT), mọi tweak đều có hoàn tác và đọc trạng thái thật"
+
+[[bin]]
+name = "TuyChinhWindows"
+path = "src/main.rs"
+
+[dependencies]
+qsu_common = { path = "../qsu_common" }
+native-windows-gui = "1.0"
+winapi = { version = "0.3", features = ["shellapi", "winuser", "winreg", "winerror", "wingdi", "winnt", "commctrl"] }

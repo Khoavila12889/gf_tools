@@ -1,0 +1,8 @@
+# Cross-compile mặc định sang Windows x86-64 (GNU) và dùng linker
+# mingw-w64 trích xuất cục bộ tại ~/mingw (xem BUILD_NOTES.md).
+[build]
+target = "x86_64-pc-windows-gnu"
+
+[target.x86_64-pc-windows-gnu]
+linker = "/home/hatch/mingw/usr/bin/x86_64-w64-mingw32-gcc"
+ar = "/home/hatch/mingw/usr/bin/x86_64-w64-mingw32-ar"

@@ -1,0 +1,14 @@
+[package]
+name = "cai_dat_win"
+version = "0.1.0"
+edition = "2021"
+description = "QSU Cài Đặt Win Tự Động - wizard cài Windows online/từ xa: cài đè bằng setup.exe hoặc cài mới qua WinPE staging"
+
+[[bin]]
+name = "CaiDatWinTuDong"
+path = "src/main.rs"
+
+[dependencies]
+qsu_common = { path = "../qsu_common" }
+native-windows-gui = "1.0"
+winapi = { version = "0.3", features = ["shellapi", "winuser", "winreg", "winerror", "wingdi", "winnt", "commctrl"] }

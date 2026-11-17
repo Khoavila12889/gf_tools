@@ -1,0 +1,10 @@
+[package]
+name = "launcher"
+version = "0.1.0"
+edition = "2021"
+description = "Utility Rebuild - cửa sổ chính (launcher) viết bằng Rust"
+
+[dependencies]
+native-windows-gui = "1.0"
+unicode-normalization = "0.1"
+winapi = { version = "0.3", features = ["shellapi", "winuser", "winreg", "winerror", "wingdi", "winnt"] }

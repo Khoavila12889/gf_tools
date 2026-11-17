@@ -1,0 +1,1241 @@
+# BUILD NOTES — Trạng thái bản rebuild
+
+Cập nhật theo từng giai đoạn. Quy ước trạng thái:
+
+- **Built** — module đã viết xong, sẵn sàng test trên máy Windows.
+- **Stub** — mới có khung/điểm vào, chưa có logic.
+- **Pending source recovery** — chưa viết được vì source gốc chưa khôi phục
+  được (31/32 module gốc bị bọc Enigma Protector — chỉ giải mã trong bộ nhớ
+  khi chạy, không dịch ngược tĩnh được). Cần **memory dump** khi chạy module
+  trong máy ảo Windows, hoặc **ảnh chụp giao diện (UI capture)** để dựng lại
+  theo hành vi quan sát được.
+- **Pending spec** — hành vi đã có bản đồ suy luận (INFERRED) đủ để viết,
+  đang chờ xếp lịch/đối chiếu.
+
+## Chuyển hướng sang Rust (2026-11-16)
+
+Theo quyết định của người dùng, bản rebuild **chuyển từ PowerShell sang
+Rust**: mỗi chương trình là một file .exe native duy nhất, không phụ thuộc
+PowerShell trên máy đích. Đặc tả logic (đặc biệt
+`docs/logic_cai_dat_win_online.md`) **không đổi** và vẫn là nguồn chuẩn —
+chỉ thay ngôn ngữ triển khai.
+
+**Đã có:**
+
+- Toolchain trên máy build (Linux): rustup tại `~/.cargo`
+  (cargo/rustc 1.100.0), target `x86_64-pc-windows-gnu`, linker
+  mingw-w64 GCC 13 trích xuất cục bộ tại `~/mingw` (không cài hệ thống),
+  cấu hình sẵn trong `rust/.cargo/config.toml` — chỉ cần
+  `cargo build --release` trong thư mục `rust/`.
+- Cargo workspace `rust/` với crate **`launcher`** đã build thành công:
+  `rust/target/x86_64-pc-windows-gnu/release/launcher.exe`
+  (PE32+ x86-64 GUI, ~2,3 MB). Launcher mô phỏng trung thực
+  `launcher/Utility.ps1`: header (tiêu đề + OS/PC-Name/User),
+  lưới 4x8 đủ 32 nút tiếng Việt, ô tìm kiếm lọc nút không phân biệt dấu,
+  nút Xoá/Giới thiệu. (Bản đầu dùng giao diện tối vẽ bằng owner-draw +
+  WM_ERASEBKGND/WM_CTLCOLORSTATIC vì NWG không hỗ trợ màu nền cho
+  Button/Window — **đã bỏ ở v0.5**, xem mục "Giao diện chuẩn Windows"
+  bên dưới.) Bấm nút sẽ chạy
+  `modules\<TênModule>.exe` cạnh launcher bằng ShellExecute "runas";
+  module chưa có file thì hiện thông báo "Chưa có module" như bản PS.
+- Launcher Rust **chưa chạy thử trên máy Windows thật** — cần test đầu
+  tiên trên máy test (kiểm tra hiển thị giao diện chuẩn + mở module
+  bằng runas) giống như bản PS trước đây.
+
+**Vai trò mới của các file PowerShell:** giữ nguyên không sửa, dùng làm
+**tài liệu tham chiếu hành vi** khi port sang Rust — `launcher/Utility.ps1`
+là chuẩn giao diện launcher, `modules/BackupRestoreDriver.ps1` là chuẩn
+hành vi module driver. Không đóng gói PS2EXE nữa.
+
+**Thứ tự port tiếp theo:**
+
+1. **BackupRestoreDriver** — đã có bản PS hoàn chỉnh làm tham chiếu.
+2. **Cài Đặt Win Tự Động** (`CaiDatWinTuDong`) — theo đặc tả
+   `docs/logic_cai_dat_win_online.md`. **Đã build xong (2026-11-16):**
+   wizard + engine WinPE là hai crate/binary riêng trong workspace
+   `rust/`. Agent hậu cài (chạy lần đăng nhập đầu, cài ứng dụng âm thầm)
+   **chủ đích KHÔNG xây dựng** — xem mục riêng bên dưới.
+3. Các module còn lại theo bảng trạng thái bên dưới (cột "File module"
+   đổi đuôi `.ps1` → `.exe` khi port).
+
+## Giao diện chuẩn Windows (v0.5 — 2026-11-17)
+
+Theo phản hồi của người dùng ("giao diện tối khó đọc — chuẩn GUI"),
+**toàn bộ giao diện đã bỏ lớp sơn tối tự vẽ** và chuyển về giao diện
+Windows chuẩn sáng:
+
+- Xoá khỏi cả 9 crate GUI (launcher + 8 module): các hằng màu `COL_*`,
+  hàm `rgb()`, `make_owner_draw()`, `raw_event_handler` chuyên sơn
+  (WM_ERASEBKGND/WM_CTLCOLORSTATIC/WM_DRAWITEM), 4 brush HBRUSH +
+  `label_colors` trong struct App, và các lời gọi
+  `set_background_color`/`set_text_color` trên ListView. Mọi control
+  nay render bằng màu hệ thống mặc định (nền sáng, chữ đen).
+  (`WinPEInstall` là console — không có GUI nên không đổi.)
+- Cỡ chữ chuẩn hoá (NWG size = chiều cao pixel ở 96 DPI): tiêu đề 21
+  in đậm (~14pt), tiêu đề mục 17 in đậm (wizard), nội dung/danh sách
+  15 (~11pt), nút 15 in đậm, chữ nhỏ/trạng thái 14, monospace
+  (Consolas) 14. Trước đây nội dung chỉ 14 và chữ nhỏ 12 nên khó đọc.
+- Nút bấm cao tối thiểu 32px (các nút 26/28/30px cũ đã nâng lên 32),
+  `HEADER_H` 58→66 (launcher 78→86), cửa sổ mỗi module lớn hơn
+  ~20×24px (wizard +20×30), nhãn tiêu đề/phụ đề/trạng thái cao hơn
+  để không cắt chữ với font mới.
+- **Chức năng không đổi**: giữ nguyên mọi control, nhãn tiếng Việt,
+  handler, luồng worker thread, logic nghiệp vụ. Hai hệ quả trình
+  bày cần biết: nhãn CẢNH BÁO của TatBitlocker và nhãn kết luận
+  (verdict) của wizard CaiDatWin trước đây có màu riêng
+  (vàng/xanh/đỏ) nay hiện màu chữ mặc định — nội dung chữ giữ
+  nguyên; các nút chọn chế độ của wizard thể hiện trạng thái bằng
+  ký hiệu ●/○ trong chữ như trước.
+- Build release toàn workspace sạch (0 lỗi, 0 cảnh báo); đóng gói
+  tại `drop_v0.5/` + `UtilityRebuild-v0.5.zip`. Chưa chạy trên
+  Windows thật — cần chụp màn hình kiểm tra: font ở tỉ lệ phóng
+  125%, nhãn dài có bị cắt (gợi ý ISO 3 dòng, thông tin edition
+  4 dòng, ghi chú mật khẩu 2 dòng trong wizard), nút launcher có
+  nhãn dài ("Quản Lý Update Windows", "Backup/Restore Driver").
+
+## Bảng trạng thái 32 module
+
+| # | Nút chức năng | File module | Trạng thái | Ghi chú |
+|---|---|---|---|---|
+| 0 | Kho Driver IRST | KhoDriverIRST.ps1 | Pending source recovery | Cần link kho driver của tác giả thay bằng nguồn Intel chính thức; chờ dump |
+| 1 | Kho Windows | KhoWindows.ps1 | Pending source recovery | Danh mục ISO nằm trên hạ tầng tác giả; bản rebuild cần nguồn ISO riêng |
+| 2 | Backup License MS | BackupLicenseMS.ps1 | Pending spec | Thao tác chuẩn: sao lưu tokens.dat/data.dat của sppsvc/ClipSvc |
+| 3 | Backup/Restore Driver | BackupRestoreDriver.exe | **Built (Rust)** | Port từ bản PS tham chiếu (vốn port từ source dịch ngược CRC-valid); liệt kê bằng WMI COM gốc — KHÔNG phân tích `pnputil /enum-drivers` vì output bị bản địa hoá; backup/restore vẫn qua pnputil; xuất HTML; log DriverTool_Log.txt; chưa test Windows thật |
+| 4 | Tắt Bitlocker | TatBitlocker.exe | **Built (Rust)** | Trạng thái qua `Get-BitLockerVolume` xuất JSON (helper PowerShell duy nhất, có chủ ý — output manage-bde bị bản địa hoá); `manage-bde -off` + poll 5 giây tới khi giải mã xong; hộp xác nhận kèm cảnh báo; log Bitlocker_Log.txt; chưa test Windows thật |
+| 5 | Tạo Boot WinPE | TaoBootWinPE.ps1 | Pending source recovery | Cần biết WinPE payload lấy từ đâu (khả năng cao là image của tác giả) |
+| 6 | Cài Đặt Win Tự Động | CaiDatWinTuDong.exe | **Built (Rust)** | Wizard Rust + engine WinPE `WinPEInstall.exe` (mục modules/install/) theo đặc tả `docs/logic_cai_dat_win_online.md` + Implementation notes v1.1; **v0.7: thêm chế độ "Cài mới hoàn toàn" (wipeDisk, §6b)** — chọn đích là cả đĩa vật lý theo serial, bắt buộc gõ serial đĩa + liệt kê mọi phân vùng sẽ bị xoá, stage.json ghi `partitionMode`/`targetDiskSerial`; đã chạy thật trên Windows (kiểm chứng 2026-11-17: tiền đề, quét/mount ISO, đọc edition, chặn build cài đè); đường wipeDisk chưa test máy thật |
+| 7 | Cài Đặt Win=WinPE | CaiDatWinWinPE.exe | **Built (Rust)** | Mặt trước TƯƠNG TÁC chạy trong WinPE (crate `cai_dat_win_winpe`, mới ở v0.6): nhận diện WinPE qua MiniNT/PEBootType; liệt kê phân vùng bằng Win32 API (không WMI) + đối chiếu diskpart/vol; chọn ISO (mount PowerShell Mount-DiskImage, thiếu PowerShell thì báo chọn trực tiếp install.wim) hoặc WIM/ESD/SWM; đọc edition bằng DISM như wizard; loại trừ mặc định ổ chứa exe + ổ chứa nguồn (ô ghi đè riêng + thực thi kiểm tra lại), format phải nhập serial ổ đích, thực thi đối chiếu lại serial trước khi ghi; chuỗi format → DISM apply → inject driver → autounattend (cùng bản sinh của wizard) → copy `custom` → bcdboot như engine WinPEInstall; log vào `<ổ nguồn>:\QSU-Logs\winpe-manual-*.log`; nút Khởi động lại chỉ bật khi cài xong. Ở Windows thường chỉ hiện chế độ Chuẩn bị (chép exe + WinPEInstall.exe ra USB/ổ dữ liệu). Engine staging tự động `WinPEInstall.exe` vẫn giữ cho luồng wizard. **v0.7: danh sách đích có thêm dòng "Toàn bộ ổ đĩa" cho từng đĩa vật lý** — xoá & chia lại từ đầu qua `qsu_common::disk` (script diskpart dùng chung với engine), đĩa chứa ổ công cụ/nguồn bị CẤM tuyệt đối (không qua ô ghi đè), xác nhận bằng serial của ĐĨA, thực thi đối chiếu lại serial + số đĩa của các ổ cấm, copy WinRE vào phân vùng Recovery mới, bcdboot trỏ phân vùng boot mới. Chưa test Windows/WinPE thật |
+| 8 | Cài Đặt Office Online | CaiDatOfficeOnline.ps1 | Pending spec | ODT + configuration.xml, tải từ Microsoft CDN |
+| 9 | Cài Đặt Office OFFLINE | CaiDatOfficeOffline.ps1 | Pending spec | Module mỏng: mount ISO/thư mục rồi chạy setup.exe |
+| 10 | Kích Hoạt Win/Office | KichHoatWinOffice.ps1 | Pending — chủ đích giới hạn | Bản rebuild CHỈ làm kích hoạt hợp lệ (key chính hãng + xem trạng thái); không làm KMS bên thứ ba |
+| 11 | Cài Đặt Phần Mềm | CaiDatPhanMem.ps1 | Pending source recovery | Danh sách link tải do tác giả tuyển chọn; cần tuyển lại toàn bộ |
+| 12 | Sao Lưu Dữ Liệu | SaoLuuDuLieu.ps1 | Pending spec | Copy thư mục hồ sơ người dùng sang ổ khác |
+| 13 | Sao Lưu/Quản lý Wifi | SaoLuuWifi.exe | **Built (Rust)** | Liệt kê hồ sơ từ XML trong Wlansvc\Profiles\Interfaces (không phụ thuộc ngôn ngữ; dự phòng netsh); export/import bằng netsh key=clear; xem mật khẩu qua thẻ `<keyMaterial>` của bản export tạm (xoá sau khi đọc); log WifiTool_Log.txt; chưa test Windows thật |
+| 14 | Sao Lưu Chrome-Edge | SaoLuuChromeEdge.ps1 | Pending spec | Copy thư mục User Data của Chrome/Edge (lưu ý DPAPI) |
+| 15 | Backup/Restore Zalo | BackupRestoreZalo.ps1 | Pending spec | Đóng tiến trình Zalo, copy thư mục dữ liệu ZaloData |
+| 16 | Check Cấu Hình Máy Tính | CheckCauHinh.ps1 | Pending spec | Truy vấn WMI phần cứng/OS, hiển thị báo cáo |
+| 17 | Check / Test | CheckTest.ps1 | Pending source recovery | Danh sách bài test chính xác chưa rõ; cần UI capture |
+| 18 | Phím Tắt BIOS | PhimTatBIOS.exe | **Built (Rust)** | Bảng tra tĩnh 16 hãng (thêm ASRock, Fujitsu, Intel NUC, LG so với danh sách tối thiểu), tìm kiếm bỏ dấu; module tham khảo thuần — không cần quyền admin |
+| 19 | Phân Vùng Ổ Cứng | PhanVungOCung.ps1 | Pending source recovery | Chưa rõ engine bên trong; bản rebuild dự kiến dùng Storage cmdlets gốc |
+| 20 | Tuỳ Chỉnh Windows | TuyChinhWindows.exe | **Built (Rust)** | Catalogue dữ liệu 49 tweak theo chuẩn Sophia Script (MIT, ghi công trong hộp Giới thiệu): Riêng tư & Telemetry 9, Giao diện & Explorer 11, Hiệu năng 9, Hệ thống 11, Menu ngữ cảnh & Tính năng 9 — mỗi tweak có áp dụng + hoàn tác về mặc định + dò trạng thái thật (registry/dịch vụ/tác vụ/gói nguồn); thêm nhóm động Gỡ ứng dụng rác (27 gói Appx tuyển chọn, chỉ gỡ cho người dùng hiện tại, KHÔNG gỡ provisioned; qua PowerShell — ngoại lệ có ghi chép trong appx.rs); đề nghị tạo điểm khôi phục trước lần áp dụng đầu tiên + nút tạo điểm khôi phục riêng; ngoại lệ công cụ ngoài ghi rõ trong engine.rs (schtasks, powercfg, Checkpoint-Computer); log TuyChinh_Log.txt; chưa test Windows thật. Danh sách tweak riêng của bản gốc vẫn chờ dump để đối chiếu bổ sung, không còn chặn module |
+| 21 | Tuỳ Chỉnh Office | TuyChinhOffice.ps1 | Pending spec | Ghi registry HKCU\Software\Microsoft\Office theo checklist |
+| 22 | Windows Security | WindowsSecurity.ps1 | Pending spec | Bật/tắt Defender, Firewall, UAC, SmartScreen |
+| 23 | Quản Lý Update Windows | QuanLyUpdateWindows.exe | **Built (Rust)** | Trạng thái/thao tác dịch vụ qua SCM API gốc (qsu_common::svc); policy NoAutoUpdate bằng Registry API gốc; kiểm tra cập nhật = mở ms-settings:windowsupdate; đặt lại = regsvr32 danh sách DLL chuẩn + chạy lại dịch vụ; mọi hành động đảo ngược được; log UpdateTool_Log.txt; chưa test Windows thật |
+| 24 | Dọn Rác Máy Tính | DonRacMayTinh.exe | **Built (Rust)** | Quét dung lượng từng mục trước + checkbox (mặc định chỉ tick mục an toàn); thùng rác qua SHEmptyRecycleBin; dừng wuauserv khi dọn cache Windows Update; cache Chrome/Edge theo từng profile; KHÔNG đụng Downloads/Documents; xác nhận trước khi xoá; log DonRac_Log.txt; chưa test Windows thật |
+| 25 | Gỡ Bỏ Phần Mềm | GoBoPhanMem.ps1 | Pending spec | Đọc khóa Uninstall + Remove-AppxPackage cho Store app |
+| 26 | Fix Lỗi Máy In | FixLoiMayIn.ps1 | Pending spec | Khởi động lại Spooler, xóa hàng đợi, fix 0x0000011b (RpcAuthnLevelPrivacyEnabled) |
+| 27 | Quản Lý Máy In | QuanLyMayIn.ps1 | Pending spec | WMI Win32_Printer: mặc định/chia sẻ/đổi tên/test page |
+| 28 | Fix Share Mạng LAN | FixShareMangLAN.ps1 | Pending source recovery | Blob lớn bất thường (~1 MB, gấp ~30 lần module thường) — chưa giải thích được; cần dump |
+| 29 | Quản lý File/Folder | QuanLyFileFolder.ps1 | Pending spec | takeown/icacls, attrib, hiện file ẩn/đuôi file |
+| 30 | Chuyển Windows OS | ChuyenWindowsOS.ps1 | Pending source recovery | Chưa rõ dùng tool ngoài nhúng sẵn hay pipeline DISM capture/apply |
+| 31 | Multi Zalo PC | MultiZaloPC.ps1 | Pending spec | Chạy nhiều phiên Zalo PC bằng thư mục dữ liệu riêng |
+
+Launcher (`launcher/Utility.ps1`): **Built** — lưới 32 nút, tìm kiếm không
+dấu, chạy module với `-Verb RunAs`, báo rõ module chưa build.
+
+## Còn bị chặn ở đâu
+
+1. **Memory dump (máy ảo Windows):** các module ghi "Pending source recovery"
+   ở trên chỉ khôi phục được source khi chạy bản gốc trong VM và dump bộ
+   nhớ sau khi Enigma giải mã. Ưu tiên dump theo thứ tự người dùng quan
+   tâm: **Cài Đặt Win Tự Động → Cài Đặt Win=WinPE →
+   Fix Share Mạng LAN → Chuyển Windows OS → Tạo Boot WinPE → Kho Windows /
+   Kho Driver IRST / Cài Đặt Phần Mềm** (ba module "Kho" cần dump chủ yếu
+   để lấy cấu trúc danh mục, còn link tải phải thay bằng nguồn riêng).
+   Riêng **Tuỳ Chỉnh Windows đã hết bị chặn**: bản Rust dùng catalogue
+   chuẩn cộng đồng (Sophia Script, MIT) theo `docs/repo_nang_cap.md`;
+   dump sau này chỉ để đối chiếu/bổ sung tweak đặc thù của bản gốc.
+2. **UI capture:** với Check / Test và các module tweak, chụp toàn bộ màn
+   hình/cây điều khiển của bản gốc cũng đủ để dựng lại checklist chức năng
+   ngay cả trước khi có dump.
+3. **Đối chiếu sau cùng:** mọi module "Pending spec" sau khi viết xong vẫn
+   cần chạy song song với bản gốc trên máy test để xác nhận tương đương
+   (đặc biệt: danh sách tweak của Tuỳ Chỉnh Windows/Office và danh sách fix
+   của Fix Lỗi Máy In / Fix Share Mạng LAN).
+
+## Module Cài Đặt Win Tự Động — bản Rust (2026-11-16)
+
+Toàn bộ workspace `rust/` build release sạch (0 lỗi, 0 cảnh báo), cả ba
+exe đều PE32+ x86-64:
+
+- `launcher.exe` → đóng gói tên `UtilityRebuild.exe` (2.318.121 byte)
+- `CaiDatWinTuDong.exe` — wizard cài đặt (2.659.510 byte): kiểm tra tiền
+  đề §2, quét ISO song song + tải từ kho online kèm kiểm SHA-256 bắt buộc
+  §3, đọc edition + chặn tương thích §4, cài đè bằng setup.exe + tail log
+  Panther §5, cài mới từ xa qua WinPE staging + BCD một lần §6, sinh
+  autounattend §7. Mọi thao tác dài chạy ở luồng nền, UI không bị khóa.
+- `WinPEInstall.exe` — engine phía WinPE (1.456.851 byte): xác thực
+  serial ổ trước khi format, apply image bằng DISM, inject driver
+  offline, bcdboot UEFI/Legacy, tự reboot về Windows mới.
+
+Ghi chú kỹ thuật:
+
+- Thư viện `qsu_common` của phiên trước **chưa từng biên dịch thành
+  công** (11 lỗi đường dẫn/feature winapi) — đã sửa tại chỗ, API không
+  đổi; test unit của thư viện biên dịch cho target Windows nên chưa chạy
+  được trên máy build Linux.
+- **Agent hậu cài chủ đích không xây dựng** (chi tiết:
+  `rust/post_install/README.md`): không cài ứng dụng âm thầm, không lưu
+  mật khẩu UltraViewer; wizard loại các khoá `apps`,
+  `ultraviewerPassword`, `adminPassword` khỏi stage.json đã ghi (mật
+  khẩu admin chỉ nằm trong autounattend.xml). Thay thế: thư mục
+  `custom` cạnh exe wizard được sao nguyên trạng vào
+  `ProgramData\QSU\custom` của ảnh mới, công cụ không diễn giải/không
+  thực thi nội dung đó. `WinPEInstall.exe` giữ móc nối tuỳ chọn: chỉ
+  stage `PostInstall.exe` nếu người dùng tự đặt file đó vào staging.
+- **Chưa có gì chạy trên Windows thật**: giao diện wizard, mount ISO +
+  parse DISM, cả hai đường cài trọn vẹn đều chờ test đầu tiên trên máy
+  thật (danh sách kiểm chứng ở cuối phần Implementation notes v1.1
+  trong `docs/logic_cai_dat_win_online.md`).
+
+## Module Tuỳ Chỉnh Windows — bản Rust (2026-11-16)
+
+- `TuyChinhWindows.exe` (2.521.588 byte, PE32+ GUI x86-64) — crate
+  `rust/tuy_chinh_windows/` gồm `tweaks.rs` (catalogue dữ liệu),
+  `engine.rs` (thực thi + dò trạng thái), `reg.rs` (Registry API gốc),
+  `appx.rs` (gỡ gói Store), `main.rs` (giao diện).
+- **49 tweak tĩnh** theo 5 nhóm (Riêng tư & Telemetry 9, Giao diện &
+  Explorer 11, Hiệu năng 9, Hệ thống 11, Menu ngữ cảnh & Tính năng 9),
+  biên soạn theo catalogue **Sophia Script for Windows (farag2, MIT)**
+  đối chiếu winutil — ghi công trong hộp Giới thiệu của module. Mỗi
+  tweak: áp dụng + hoàn tác về mặc định Windows + trạng thái đọc thật
+  (Đã áp dụng / Chưa áp dụng / Không rõ), áp dụng từng mục, nhấp đúp,
+  hoặc hàng loạt theo ô tick; tìm kiếm không dấu; lọc theo nhóm.
+- **Nhóm động thứ sáu — Gỡ ứng dụng rác:** liệt kê các gói Appx trong
+  danh sách tuyển chọn 27 gói đang cài trên máy, gỡ cho **người dùng
+  hiện tại** (không gỡ gói provisioned). Không mục nào được tick sẵn —
+  gỡ phải tick tay và xác nhận lại danh sách gói trong hộp thoại.
+- **An toàn:** trước lần áp dụng đầu tiên của mỗi phiên, hộp thoại đề
+  nghị tạo điểm khôi phục (Có/Không/Huỷ); có nút "Tạo điểm khôi phục"
+  riêng. Tạo điểm khôi phục dùng `Checkpoint-Computer` (PowerShell) —
+  không có Win32 API công khai cho System Restore; tần suất 24 giờ
+  được gỡ bằng Registry API gốc trước đó. Các ngoại lệ công cụ ngoài
+  khác (schtasks cho tác vụ theo lịch, powercfg cho gói nguồn, Appx
+  qua PowerShell) đều ghi lý do trong code. GUID gói Ultimate
+  Performance do module tạo được lưu ở `TuyChinhWindows_state.txt`
+  cạnh exe để dò trạng thái/hoàn tác chính xác (output powercfg bị bản
+  địa hoá nên chỉ trích GUID theo mẫu hex).
+- **Chưa chạy trên Windows thật** — cần test: dò trạng thái khớp thực
+  tế (đặc biệt hai tweak tác vụ CEIP/Appraiser qua XML schtasks, gói
+  Ultimate Performance, menu chuột phải cổ điển Win 11), áp dụng +
+  hoàn tác một tweak an toàn (Hiện đuôi file), tạo điểm khôi phục,
+  liệt kê/gỡ thử một gói Appx an toàn.
+
+## Chế độ Cài mới hoàn toàn — wipeDisk (v0.7 — 2026-11-17)
+
+Theo yêu cầu người dùng: đường "Cài mới" trước đây chỉ format phân
+vùng Windows và giữ nguyên cấu trúc đĩa; nay có thêm chế độ đích là
+**toàn bộ ổ đĩa vật lý** — xoá sạch mọi phân vùng, chia lại từ đầu.
+Chế độ giữ phân vùng (`preserve`) vẫn là mặc định. Đặc tả đầy đủ:
+`docs/logic_cai_dat_win_online.md` §6b.
+
+Ba file build lại (toàn workspace vẫn 0 lỗi / 0 cảnh báo, PE32+ x86-64):
+
+- `CaiDatWinTuDong.exe` — 2.733.141 byte (wizard: khối chọn chế độ
+  phân vùng + chọn đĩa đích hiện ở chế độ Cài mới; chặn cứng đĩa chứa
+  ổ Data, đĩa < 25GB, serial không đọc được, serial gõ tay sai; hộp
+  xác nhận cuối ghi rõ chế độ + liệt kê mọi phân vùng sẽ bị xoá;
+  cửa sổ cao thêm 174px cho khối chọn đĩa).
+- `CaiDatWinWinPE.exe` — 2.649.351 byte (danh sách đích thêm dòng đĩa
+  vật lý; xác nhận bằng serial của đĩa; thực thi đối chiếu lại).
+- `WinPEInstall.exe` — 1.530.042 byte (engine đọc `partitionMode`/
+  `targetDiskSerial` từ stage.json, thiếu khoá → `preserve`; mã thoát
+  mới 10/11/12 cho các chốt an toàn wipe).
+
+Mã dùng chung mới: **`qsu_common::disk`** — liệt kê đĩa vật lý thuần
+IOCTL (không phụ thuộc ngôn ngữ output), khớp đĩa theo serial chuẩn
+hoá (yêu cầu duy nhất), sinh + thực thi script diskpart chia lại
+(GPT: EFI 260MB + MSR 16MB + Windows + Recovery 600MB có type GUID và
+thuộc tính chuẩn; MBR: System Reserved 100MB active + Windows +
+Recovery 600MB id=27), copy WinRE vào phân vùng Recovery mới. Bốn
+chốt an toàn cứng (đĩa chứa staging/Data không bao giờ là đích; bắt
+buộc gõ serial; nhận diện bằng serial; đối chiếu lần cuối ngay trước
+diskpart) ghi chi tiết ở §6b của đặc tả. **Chưa test trên máy thật**
+— checklist test ở HUONG-DAN.txt của bản đóng gói v0.7 (ưu tiên: máy
+2 đĩa chạy trọn vòng; máy 1 đĩa phải bị từ chối ở cả 3 tầng; WinRE
+sau cài).
+
+## Sửa lỗi liệt kê đĩa wipeDisk (v0.7.1 — 2026-11-17)
+
+Người dùng test v0.7 trên máy thật (một đĩa: C = Windows cũ, E =
+Data/ISO): ô chọn đĩa đích wipe **trống hoàn toàn**, cạnh danh sách
+phân vùng hiện "Chưa liệt kê được đĩa vật lý nào." Root cause trong
+`qsu_common::disk::list_physical_disks` (bản v0.7):
+
+1. **Gate tồn tại đĩa theo một IOCTL duy nhất** — đĩa chỉ được tính
+   khi `IOCTL_DISK_GET_LENGTH_INFO` thành công (`query_disk_length
+   != 0`); driver lưu trữ từ chối IOCTL đó (RAID/RST, đầu đọc thẻ,
+   một số controller) là đĩa bị loại âm thầm. Vòng quét còn **dừng
+   sớm sau 4 số đĩa lỗi liên tiếp** (từ số 4), nên một dãy thiết bị
+   lỗi ở số thấp che mất đĩa thật ở số cao hơn.
+2. **Mọi lỗi đều bị nuốt** — không một dòng log/mã lỗi nào, nên
+   không thể chẩn đoán từ xa; giao diện cũng không phân biệt được
+   "0 đĩa" với "có đĩa nhưng bị cấm" (combo chỉ hiện đĩa hợp lệ là
+   đích đến của lỗi hiển thị này).
+3. **Layout đọc lỗi = mất ký tự ổ trên phân vùng** (GET_DRIVE_LAYOUT_EX
+   lỗi → phân vùng rỗng) — `contains_letter` khi đó luôn false, chốt
+   "đĩa chứa ổ Data" ở phía wizard chỉ dựa vào đường này là chưa đủ
+   cứng; nay đối chiếu thêm `volume_disk_number` (extents) độc lập.
+4. `execute_wipe` đối chiếu serial tại thời điểm thực thi chỉ bằng
+   IOCTL tại chỗ — đĩa định danh qua dự phòng sẽ không bao giờ khớp.
+
+Đã sửa (toàn workspace vẫn 0 lỗi / 0 cảnh báo):
+
+- `qsu_common::disk`: `enumerate_disks()` mới trả `DiskEnumeration
+  { disks, diag }` (`list_physical_disks()` giữ chữ ký cũ, là
+  wrapper). Tiêu chí tồn tại đĩa = **mở được handle** PhysicalDriveN;
+  quét đủ 0..16 không dừng sớm; dung lượng IOCTL lỗi thì suy từ
+  tổng phân vùng; mọi lỗi IOCTL ghi kèm GetLastError vào `diag`.
+  Khi thiếu đĩa/serial/dung lượng: hợp nhất dự phòng **PowerShell
+  Get-Disk (JSON)** rồi **diskpart** (`list disk` + `detail disk`,
+  phân tích theo mẫu số/đơn vị/GUID — model lấy theo bố cục: dòng
+  ngay trước dòng Disk ID; serial dự phòng = `DP-<Disk ID>`, trường
+  mới `PhysicalDisk.from_fallback`). `execute_wipe` đối chiếu serial
+  qua chính `enumerate_disks()` và ghi lại chẩn đoán vào log trước
+  khi wipe.
+- Wizard (`CaiDatWinTuDong.exe` — 2.799.998 byte): chẩn đoán liệt
+  kê đẩy vào log panel lúc quét (dòng `[Đĩa] ...`) + chép vào file
+  log khi bắt đầu cài; `refresh_disk_picker()` đổ MỌI đĩa vào combo
+  kèm hậu tố lý do cấm (`disk_block_reason`: chứa ổ Data/staging —
+  chốt cứng duy nhất, đối chiếu 2 đường; không đọc được serial;
+  dung lượng 0; đĩa dự phòng không xác minh được phân vùng; đĩa <
+  25GB) — đĩa chứa Windows đang chạy **không** bị cấm ở wizard
+  (wipe chạy trong WinPE); đổ lại picker khi quét xong, khi đổi ổ
+  Data, và mỗi lần vào chế độ wipe; 0 đĩa → dòng rõ ràng "Không
+  liệt kê được ổ đĩa vật lý nào — xem log" trong combo + nhãn cảnh
+  báo; nhãn gợi ý tĩnh dưới ô chọn đĩa (xoá theo đĩa vật lý, không
+  theo ký tự ổ; C và Data chung đĩa thì giữ phân vùng hoặc boot
+  WinPE từ USB); cổng `disk_block_reason` kiểm tra lại ở `on_start`;
+  cửa sổ cao thêm 48px (1102) cho nhãn gợi ý. Combo ổ Data rỗng
+  cũng hiện dòng giải thích thay vì để trống.
+- Hai binary còn lại link cùng `qsu_common::disk` nên build lại
+  đồng bộ: `CaiDatWinWinPE.exe` — 2.707.545 byte,
+  `WinPEInstall.exe` — 1.587.511 byte. Gói:
+  `UtilityRebuild-v0.7.1.zip` (drop_v0.7.1 = drop_v0.7 + 3 binary
+  trên + HUONG-DAN cập nhật). **Chưa test trên máy thật** — ca test
+  quyết định là chính máy đã gặp lỗi: combo phải hiện đĩa kèm dòng
+  BỊ CẤM (chứa E:); nếu vẫn trống thì gửi log `[Đĩa]`.
+
+## Mật khẩu admin tuỳ chọn + log quét bền (v0.7.2 — 2026-11-17)
+
+Người dùng test v0.7.1 trên máy thật (máy WIN10 đang cài lại hàng
+loạt) và nêu logic triển khai: **cài Windows không cần mật khẩu** —
+tài khoản admin tạo ra để trống mật khẩu, người dùng cuối tự đặt
+sau. Trước đây wizard chặn ngay ở validation ("Mật khẩu tài khoản
+admin trống hoặc hai ô nhập không khớp") kể cả khi chủ đích để
+trống. Đồng thời ca liệt kê đĩa ở v0.7.1 cho thấy chẩn đoán [Đĩa]
+chỉ vào file log khi bắt đầu cài — mà lỗi liệt kê đĩa lại khiến
+không bắt đầu cài được, bằng chứng bị kẹt trong log panel.
+
+Đã sửa (toàn workspace vẫn 0 lỗi / 0 cảnh báo):
+
+**Fix 1 — mật khẩu admin thành TUỲ CHỌN** (wizard + module WinPE,
+logic đồng nhất):
+- Validation cả hai nơi: chặn **chỉ khi** hai ô mật khẩu lệch nhau
+  (một ô trống/một ô có, hoặc nhập lại sai) với thông báo mới "Hai
+  ô mật khẩu không khớp — để trống cả hai ô nếu không muốn đặt mật
+  khẩu...". Cả hai ô trống = hợp lệ; cả hai ô giống nhau = như cũ.
+- `build_unattend` (cả hai crate dùng chung một bản sinh): mật
+  khẩu trống → `LocalAccount` **không có** phần tử `<Password>` và
+  `AutoLogon` **không có** phần tử `<Password>` — không sinh
+  `<Value>` rỗng (đối chiếu cấu trúc Schneegans: AutoLogon không
+  mật khẩu là cấu hình Setup hỗ trợ cho đăng nhập nội bộ). Có mật
+  khẩu → khối `<Password>` như cũ, thụt lề giữ nguyên (đã mô phỏng
+  kết xuất kiểm tra: XML hợp lệ cả hai trường hợp, trường hợp
+  trống có đúng 0 phần tử Password).
+- Hộp xác nhận cuối: wizard (cả tóm tắt wipeDisk lẫn tóm tắt
+  thường, chỉ ở chế độ cài mới) và module WinPE (cả hai biến thể)
+  đều thêm dòng "Tài khoản \<tên\>: KHÔNG mật khẩu — người dùng tự
+  đặt mật khẩu sau khi cài" (hoặc "có đặt mật khẩu (không hiển
+  thị)"). Module WinPE bỏ hộp hỏi riêng khi mật khẩu trống —
+  trạng thái nay nằm ở hộp xác nhận cuối như wizard; `InstallPlan`
+  thêm `admin_user` + `admin_passwordless` (chỉ trạng thái, plan
+  không mang mật khẩu).
+- Log: cả hai luồng ghi "Tài khoản admin: không đặt mật khẩu
+  (theo lựa chọn)" khi để trống (wizard chỉ ở đường cài mới —
+  đường cài đè không tạo tài khoản). Giá trị mật khẩu vẫn không
+  bao giờ vào log; `stage.json` không đổi (vẫn strip khoá mật
+  khẩu; không mật khẩu thì không có gì để strip).
+- Nhãn ô mật khẩu ở cả hai giao diện: "Mật khẩu (để trống = không
+  đặt mật khẩu):" — hàng nhập được bố cục lại (ô nhập 170/150px,
+  nhãn hai 140px, ghi chú rút gọn còn "(Chỉ cài mới. Không ghi
+  vào log.)" ở wizard và "(Không ghi vào log.)" ở module WinPE).
+
+**Fix 2 — log quét ghi ra file ngay khi quét xong** (wizard):
+- `persist_scan_log()` chạy ở cuối mỗi lần `on_preflight` (quét
+  đầu + mọi lần Quét lại): nội dung = tóm tắt tiền đề (OS, boot
+  mode, BitLocker, nguồn điện, OEM key, kết luận), danh sách ổ cố
+  định + marker, ổ Data đang chọn, mọi đĩa vật lý (summary + phân
+  vùng), và **toàn bộ** dòng chẩn đoán `[Đĩa]` của cả hai đường
+  liệt kê (IOCTL + dự phòng).
+- Đường ghi: `<ổ Data>:\QSU-Logs\wizard-scan-<yyyyMMdd-HHmm>.log`
+  (theo `logsFolder` trong settings, tạo thư mục nếu cần); ổ Data
+  chưa chọn được hoặc ghi lỗi → cạnh file exe wizard. Ghi ở luồng
+  nền; đường dẫn file đẩy vào log panel khi ghi xong (ca 0 đĩa có
+  câu chữ riêng yêu cầu gửi file để chẩn đoán). Bản chép chẩn đoán
+  vào file log lúc bắt đầu cài (v0.7.1) vẫn giữ.
+
+Sản phẩm: `CaiDatWinTuDong.exe` — **2.820.945 byte**,
+`CaiDatWinWinPE.exe` — **2.708.447 byte** (cả hai PE32+ GUI
+x86-64, kiểm bằng `file`). `WinPEInstall.exe` **không đổi**
+(md5 trùng bản v0.7.1 — engine không đọc mật khẩu từ stage.json).
+Gói: `UtilityRebuild-v0.7.2.zip` (drop_v0.7.2 = drop_v0.7.1 + 2
+binary trên + HUONG-DAN cập nhật). **Chưa test trên máy thật** —
+ca test quyết định: (1) cài mới để trống cả hai ô mật khẩu →
+wizard qua validation, hộp xác nhận hiện dòng KHÔNG mật khẩu,
+Windows mới đăng nhập thẳng bằng tài khoản không mật khẩu và
+autounattend.xml trong staging không có phần tử Password; (2)
+điền lệch một ô → vẫn bị chặn; (3) mở wizard trên máy lỗi liệt
+kê đĩa → file `wizard-scan-*.log` xuất hiện trên ổ Data kèm đủ
+dòng [Đĩa] dù không bắt đầu cài.
+
+## Sửa lỗi "bấm Yes xong không có hành động gì" (v0.7.3 — 2026-11-17)
+
+Người dùng test v0.7.2 trên máy thật: đi hết wizard tới hộp xác
+nhận cuối của cài mới wipeDisk (đĩa 0 liệt kê qua đường dự phòng,
+serial DP-759ED391 gõ khớp, hộp xác nhận đầy đủ/đúng, tài khoản
+không mật khẩu) — **bấm "Yes" xong không thấy hành động gì và
+wizard như thoát/đóng**, thay vì chạy chuỗi staging (copy WinPE +
+sources + driver vào staging trên ổ Data, ghi stage.json +
+autounattend, đăng ký BCD boot một lần, báo tiến độ, hỏi reboot).
+
+**Truy vết toàn bộ đường sau xác nhận trong mã nguồn** (`on_start`
+→ validation → `confirm_box` → tạo logger → `spawn_exec` →
+`exec_clean`/`exec_inplace` → handler `exec_done` trong `refresh`):
+
+- Mọi bước staging đều đã có xử lý lỗi qua `fail(...)` →
+  `exec_done = Err` → hộp thoại lỗi + mở khoá giao diện. Các hàm
+  phụ trên đường này (`Logger`, `cmd::run_*`, parse DISM
+  `parse_kv`/`kv_get`/`extract_guid`, `register_bcd`, ghi
+  stage.json) **không có lời gọi nào panic được** với dữ liệu của
+  máy này; `stop_thread_dispatch()` chỉ gắn với nút Đóng; profile
+  release **không** đặt `panic = "abort"` nên kể cả panic ở luồng
+  nền cũng không thể làm tiến trình thoát (chỉ làm giao diện đứng
+  im). **Kết luận: trong mã nguồn không tồn tại đường nào khiến
+  wizard tự thoát im lặng sau Yes — lỗi không tái hiện được từ
+  source.**
+- Đối chiếu wipeDisk với dữ liệu máy này (đĩa dự phòng
+  `from_fallback`, phân vùng size 0, serial DP-): định danh
+  khớp nhau hai phía wizard↔engine (cùng `enumerate_disks`, hợp
+  nhất theo số đĩa, serial DP- điền vào serial trống và set
+  `from_fallback`); engine tìm đích theo SERIAL trước (không phụ
+  thuộc số đĩa), chốt đĩa Data bằng extents fail-closed,
+  `execute_wipe` đối chiếu lại serial ngay trước diskpart. Size
+  phân vùng 0 chỉ ảnh hưởng danh sách hiển thị, không chạm thực
+  thi. **Không có điểm nào engine từ chối oan đĩa dự phòng ở khâu
+  thực thi.**
+- Nguyên nhân khớp nhất với triệu chứng: **cửa sổ wizard cao
+  1102px** (vùng tiến độ ở y=918–1048: thanh tiến độ, nhãn trạng
+  thái, ô log, hai nút) trong khi cửa sổ session từ xa của người
+  dùng thấp hơn hẳn — trong mọi ảnh chụp thực địa, đáy cửa sổ đều
+  nằm ngoài vùng nhìn. Sau Yes, toàn bộ phản hồi (tiến độ
+  3→10→18→22%…, dòng log) xuất hiện đúng ở vùng bị khuất đó:
+  staging có thể đã chạy mà người dùng không thấy bất kỳ dấu hiệu
+  nào, và kết luận "không có hành động gì, out".
+
+Đã sửa/cứng hoá (chỉ wizard — `CaiDatWinTuDong.exe` **2.824.505
+byte**; `WinPEInstall.exe` và `CaiDatWinWinPE.exe` **không đổi**,
+md5 trùng v0.7.2):
+
+1. **Phản hồi tức thì + cửa sổ tự vào khung hình:** ngay trong cú
+   bấm Yes (luồng giao diện, trước mọi vòng lặp qua luồng nền):
+   nhãn trạng thái đổi thành "Đã xác nhận — đang bắt đầu..." +
+   thanh tiến độ nhảy 1%, và `shift_window_for_exec()` dịch cửa
+   sổ lên để ĐÁY cửa sổ nằm trọn trong vùng làm việc của màn
+   hình (vị trí gốc lưu vào `Model.saved_window_rect`; handler
+   `exec_done` gọi `restore_window_pos()` đưa cửa sổ về chỗ cũ
+   trước khi hiện hộp thoại kết quả).
+2. **Nhịp tim đầu tiên của luồng staging:** `exec_main` mở đầu
+   bằng `set_exec_progress(1, "Đã bắt đầu — đang chuẩn bị
+   staging...")` trước mọi thao tác dài.
+3. **Bọc `catch_unwind` toàn bộ thân luồng cài đặt** (refactor
+   `spawn_exec` → wrapper + `exec_main`): mọi panic đều biến
+   thành `exec_done = Err` với thông điệp đọc được → hộp thoại
+   lỗi + log panel + file log trên ổ Data + giao diện mở khoá.
+   Lời gọi `thread::spawn` trong `on_start` cũng được bọc
+   `catch_unwind` (spawn lỗi → báo lỗi, khôi phục trạng thái).
+4. **Khoá Shared chịu poison** (`lock_shared`): toàn bộ chốt
+   tiến độ/hoàn tất/lỗi trên đường thực thi dùng khoá này — một
+   panic từng xảy ra khi đang giữ khoá không còn làm các chốt
+   sau panic dây chuyền và mất luôn thông báo lỗi.
+5. **Hộp đen panic** (`install_panic_hook`, cài đầu `main()`):
+   mọi panic ở mọi luồng được ghi kèm vị trí file:dòng vào
+   `CaiDatWinTuDong-panic.log` cạnh file exe — bằng chứng để
+   chẩn đoán nếu còn ca chết bất thường ngoài thực địa (app GUI
+   không console nên mặc định panic không để lại dấu vết nào).
+
+Gói: `UtilityRebuild-v0.7.3.zip` (drop_v0.7.3 = drop_v0.7.2 +
+wizard build lại + HUONG-DAN cập nhật). Toàn workspace build
+release sạch (0 lỗi, 0 cảnh báo). **Chưa test trên máy thật** —
+ca test quyết định là chính máy đã gặp lỗi: bấm Yes → cửa sổ
+dịch lên, tiến độ chạy 1% → 3% → 10% → 18% → 22%...; nếu còn
+dừng/biến mất, gửi `CaiDatWinTuDong-panic.log` + ảnh chụp hộp
+thoại/log tại điểm dừng.
+
+## Sửa lỗi chết im lặng sau cú bấm Yes — GỐC LỖI THẬT (v0.7.4 — 2026-11-17)
+
+Người dùng gửi bằng chứng cứng từ `E:\QSU-Logs`: **ba** file
+`install-20261117-1048 / -1050 / -1106.log` (hai lần đầu v0.7.2,
+lần 11:06 khả năng cao v0.7.3) — cả ba đều ~1KB và **dừng ở đúng
+một dòng duy nhất**: `[2026-11-17 11:06:33] --- Chẩn đoán liệt
+kê đĩa lúc quét tiền đề ---`. Không dòng `[Đĩa]` nào theo sau,
+dòng "=== Bắt đầu quá trình cài đặt ===" của `spawn_exec` không
+bao giờ xuất hiện. Chết tất định, cùng một điểm, qua hai phiên
+bản — bác bỏ giả thuyết "cửa sổ khuất" của v0.7.3 (đó chỉ là vấn
+đề hiển thị đi kèm, không phải nguyên nhân chết).
+
+**Root cause — tái nhập đồng bộ qua NWG Notice + RefCell
+double-borrow, chết trên luồng chính trong handler:**
+
+1. Khối tạo logger trong `on_start` (main.rs:3293 bản v0.7.3)
+   giữ `let mut m = app.model.borrow_mut()` trong SUỐT khối,
+   và bên trong gọi `lg.line("--- Chẩn đoán liệt kê đĩa...")`
+   (main.rs:3301) để chép chẩn đoán vào install log.
+2. `Logger::line` (qsu_common/src/log.rs:60-70) ghi file TRƯỚC
+   (nên dòng header vào được file — khớp bằng chứng tuyệt đối),
+   rồi gọi sink. Sink của `make_logger` (main.rs:256-266) đẩy
+   dòng vào `shared.log_lines` rồi gọi `snd.notice()`.
+3. `NoticeSender::notice()` của **native-windows-gui 1.0.13**
+   (src/controls/notice.rs:129-137) dùng `SendNotifyMessageW` —
+   với cửa sổ do chính luồng hiện tại tạo ra, hàm này dispatch
+   thông điệp ĐỒNG BỘ ngay tại chỗ (khác luồng mới là post bất
+   đồng bộ). Hệ quả: `refresh()` chạy TÁI NHẬP ngay giữa
+   `lg.line`, trên cùng luồng chính, trong lúc `borrow_mut` ở
+   bước 1 vẫn còn sống.
+4. `refresh` gọi `render_log` đầu tiên; render_log đọc
+   `app.model.borrow().log_rendered` (main.rs:2226 bản v0.7.3)
+   để so với tổng số dòng — mà sink vừa đẩy thêm một dòng nên
+   điều kiện vẽ lại đúng, và cả `borrow()` lẫn `borrow_mut()`
+   (main.rs:2228) đều **panic "already mutably borrowed"** khi
+   đang có `RefMut` sống.
+5. Panic unwind ngược qua `refresh` → wndproc của NWG là
+   `extern "system"` (biên FFI không unwind được) → **abort
+   tiến trình tức thì, im lặng**. Luồng worker chưa từng được
+   spawn nên không có dòng nào thêm vào log. Lớp `catch_unwind`
+   của v0.7.3 bọc worker thread và lời gọi spawn — cả hai đều
+   nằm SAU điểm chết này nên không cứu được.
+
+Vì sao các đường khác không chết: `push_log`/notice từ luồng
+nền (preflight, quét ISO, tải) là post bất đồng bộ — refresh
+chạy sau, khi không borrow nào sống; các `push_log` trên luồng
+chính ở handler khác không giữ borrow ngang qua lời gọi. Chỉ
+khối logger của `on_start` giữ `borrow_mut` ngang qua
+`lg.line` — và dump chẩn đoán (thêm ở v0.7.1) là lời gọi
+`lg.line` đầu tiên trong khối đó. Ở v0.7.1 người dùng chưa từng
+bấm được tới Yes (kẹt ở validation/liệt kê đĩa) nên lỗi nằm im
+tới v0.7.2.
+
+**Ứng viên đã rà và LOẠI TRỪ** (đoạn sau xác nhận, trên dữ liệu
+máy này): format/slice theo byte-index trên chuỗi tiếng Việt —
+tóm tắt xác nhận và ExecPlan toàn dùng String nguyên khối,
+`summary()`/`describe_partitions()` đã chạy thật khi hiện hộp
+xác nhận; `data_letter.unwrap()` (main.rs:3229) đã được chặn
+bởi các kiểm tra `is_none` phía trên; vòng dump tự thân chỉ là
+`format!("[Đĩa] {}", line)` trên `Vec<String>` có sẵn — không
+thể panic. **Tràn stack**: trong đoạn này không có đệ quy nào;
+vector đệ quy duy nhất qua notice (refresh → push_log →
+notice → refresh) bị chặn vì `refresh_inner` `.take()` mọi
+trường shared TRƯỚC khi xử lý, lượt tái nhập chỉ thấy toàn None
+và dừng ở render_log — độ sâu tối đa 2. Việc chưa thấy
+`CaiDatWinTuDong-panic.log` được giải thích đơn giản: người
+dùng tìm trong QSU-Logs trong khi hook của v0.7.3 ghi CẠNH FILE
+EXE (đã hướng dẫn lại, chưa có trả lời) — hook luôn bắn trước
+khi unwind với mọi panic thường, nên file đó khả năng cao đang
+nằm ở thư mục modules ghi đúng dòng panic tại render_log.
+
+**Đã sửa (chỉ wizard — `CaiDatWinTuDong.exe` 2.828.883 byte;
+`WinPEInstall.exe` và `CaiDatWinWinPE.exe` không đổi, md5 trùng
+v0.7.3):**
+
+1. **Tái cấu trúc khối logger trong `on_start_inner`** — không
+   giữ bất kỳ borrow nào của model trong lúc ghi log: đọc
+   snapshot (`logger` sẵn có, `logs_folder`, `disk_diag` clone)
+   trong một borrow ngắn → thả → tạo logger + ghi dump → cất
+   logger bằng một `borrow_mut` ngắn khác.
+2. **`render_log` mượn kiểu không-panic**: `try_borrow` /
+   `try_borrow_mut` — model đang bận thì bỏ qua lượt vẽ (dòng
+   được vẽ bù ở notice kế tiếp). Diệt cả lớp lỗi tái nhập cho
+   mọi đường log khác. Khoá Shared trong render_log/refresh/
+   push_log/sink đổi sang `lock_shared` chịu poison.
+3. **`catch_unwind` bọc toàn thân `on_start`** (wrapper +
+   `on_start_inner`): bắt được panic → ghi vào install log (nếu
+   logger đã tạo), `running = false`, khôi phục vị trí cửa sổ,
+   mở khoá nút Bắt đầu, hiện hộp thoại lỗi. **`refresh` cũng
+   được bọc tương tự** (wrapper + `refresh_inner`; khi bắt
+   panic chỉ ghi thẳng vào Shared, không bắn notice mới tránh
+   đệ quy). Thêm lưới ngoài cùng: `catch_unwind` ngay tại
+   closure bind sự kiện trong `finish_build` — không handler
+   nào còn có thể đưa panic qua biên FFI.
+4. **Step marker flush từng dòng trong install log** quanh
+   đoạn sau xác nhận: `[step] logger ok (đã qua xác nhận)` →
+   header dump → `[step] diag header ok` → dòng `[Đĩa]` đầu
+   tiên → `[step] diag dong 1 ok` → hết dump → `[step] diag
+   ok` → (worker) "=== Bắt đầu quá trình cài đặt ===" →
+   `[step] spawn ok`. Logger vốn flush sau mỗi dòng nên dòng
+   cuối của file chỉ đúng bước đã chết (marker mịn quanh hai
+   dòng đầu của dump là để phân biệt sink-của-dòng-nào với các
+   nguyên nhân không qua hook).
+5. **Hộp đen panic ghi thêm bản sao vào ổ Data**: static
+   `PANIC_LOG_DIR` đặt ở `on_preflight` (ngay khi biết ổ Data)
+   và lúc tạo logger cài đặt; hook ghi cả cạnh exe lẫn
+   `<ổ Data>:\QSU-Logs\CaiDatWinTuDong-panic.log`.
+
+Gói: `UtilityRebuild-v0.7.4.zip` (drop_v0.7.4 = drop_v0.7.3 +
+wizard build lại + HUONG-DAN cập nhật). Toàn workspace build
+release sạch (0 lỗi, 0 cảnh báo). **Chưa test trên máy thật** —
+ca test quyết định là chính kịch bản đã chết ba lần: Cài mới →
+wipeDisk → Yes; kỳ vọng install log chạy qua đủ các [step] và
+tiến độ staging chạy; nếu còn dừng, dòng [step] cuối + file
+panic trên ổ Data sẽ chỉ đúng điểm chết mới.
+
+## Chuỗi dự phòng boot.sdi cho ramdisk WinPE (v0.7.5 — 2026-11-17)
+
+Người dùng test v0.7.4 trên máy thật (DESKTOP-J8LPB75): bản sửa
+RefCell chạy đúng — wizard không còn chết ở Yes, staging chạy tới
+~50% rồi dừng bằng **hộp thoại lỗi đọc được** (hành vi mới hoạt
+động như thiết kế):
+
+> "ISO thiếu sources\boot.sdi — không thể tạo ramdisk WinPE."
+
+**Rà soát bước ramdisk trong `exec_clean`** (wizard
+`cai_dat_win/src/main.rs`): bước này cần đúng hai file từ ISO đã
+mount — `sources\boot.wim` (làm WinPE WIM, về sau) và
+`sources\boot.sdi` (SDI cho BCD ramdisk; `register_bcd` trỏ
+`ramdisksdipath` tới `\<staging>\boot.sdi` nên file phải nằm ở gốc
+staging). boot.sdi được kiểm tra ngay sau khi copy xong toàn bộ
+`sources` (22%→52% — khớp mốc ~50% thực địa) tại đúng MỘT vị trí
+`src_dir.join("boot.sdi")` với `src_dir = <ký tự mount>:\sources`.
+Loại trừ khả năng tìm nhầm chỗ: thư mục sources tồn tại và copy
+thành công (tiến độ đã chạy hết đoạn copy) nên ký tự mount đúng;
+file kiểm tra trên bản mount gốc (không phải bản đã copy) nên
+không có lệch đường dẫn — kết luận ISO mod
+`Windows11-Pro-HDD4G-26300.9457-x64.iso` (ảnh bên trong build
+19041) **thật sự không có `sources\boot.sdi`** (bản mod thường
+lược bỏ file này). Điểm yếu phụ phát hiện khi rà: bản cũ chép
+boot.sdi bằng `let _ = std::fs::copy(...)` — nuốt lỗi copy, file
+đích thiếu vẫn đi tiếp tới BCD.
+
+**Đã sửa (chỉ wizard — `CaiDatWinTuDong.exe` 2.841.140 byte;
+`WinPEInstall.exe` và `CaiDatWinWinPE.exe` không đổi):** hàm mới
+`stage_boot_sdi` thử lần lượt, **ghi log mọi vị trí đã thử** và vị
+trí cung cấp được file, chép xong kiểm chứng file đích tồn tại:
+
+1. `<mount>:\sources\boot.sdi` (hành vi cũ);
+2. `<mount>:\boot.sdi` (gốc đĩa ISO);
+3. `%WINDIR%\Boot\DVD\PCAT\boot.sdi` của Windows đang chạy;
+4. `%WINDIR%\Boot\DVD\EFI\boot.sdi` của Windows đang chạy — hai
+   bản này có sẵn trong mọi Windows chuẩn, là chính SDI ramdisk
+   dùng chung mà Microsoft dùng cho entry boot setup của mình,
+   thay thế an toàn, không phụ thuộc build;
+5. `<ổ OS>:\Recovery\WindowsRE\boot.sdi` (WinRE nếu sẵn có).
+
+Lỗi copy ở một ứng viên → log lại và thử ứng viên kế. Không thấy
+ở cả 5 vị trí: vẫn fail TRƯỚC mọi thao tác phá huỷ (bước này vẫn
+thuần staging), thông điệp lỗi liệt kê toàn bộ vị trí đã thử kèm
+ghi chú lỗi copy nếu có — báo cáo thực địa lần sau tự chẩn đoán
+được. **boot.wim KHÔNG được thay thế** (bắt buộc từ ISO hoặc
+`settings.winpeWimPath` như cũ; thiếu vẫn báo lỗi nêu đường dẫn
+đã thử). Không đổi hành vi nào khác; mọi chốt an toàn giữ nguyên.
+
+Gói: `UtilityRebuild-v0.7.5.zip` (9.614.842 byte, 16 file,
+testzip sạch; drop_v0.7.5 = drop_v0.7.4 + wizard build lại +
+HUONG-DAN cập nhật). Toàn workspace build release sạch (0 lỗi,
+0 cảnh báo). **Chưa test trên máy thật** — ca test quyết định:
+chạy lại kịch bản cũ trên DESKTOP-J8LPB75, kỳ vọng chạy qua mốc
+50%, log có dòng "boot.sdi: dùng ..." (khả năng cao rơi vào ứng
+viên 3/4 — bản trong Windows đang chạy) và đi tiếp hết staging
+tới BCD + hỏi reboot.
+
+## Sửa lỗi DISM mount WinPE 0xC1510111 — read-only chép từ ISO (v0.7.6 — 2026-11-17)
+
+Người dùng test v0.7.5 trên máy thật: chuỗi dự phòng boot.sdi
+chạy đúng (log: `boot.sdi: dùng C:\Windows\Boot\DVD\PCAT\boot.sdi
+(3170304 byte) -> E:\QSU-Stage\boot.sdi`), staging đi tiếp tới
+bước mount WinPE rồi dừng bằng hộp thoại:
+
+> "DISM mount WinPE thất bại (Ok(Some(-1051655919)))"
+
+**Bằng chứng quyết định từ install log** — lời của chính DISM:
+
+```
+$ dism /Mount-Wim /WimFile:E:\QSU-Stage\winpe.wim /Index:2 /MountDir:E:\QSU-Stage\mnt
+Error: 0xc1510111
+"You do not have permissions to mount and modify this image.
+Verify that you have Read/Write permissions or mount the image
+using the /ReadOnly option."
+```
+
+**Phỏng đoán ban đầu SAI**: không phải nén solid/LZMS hay ESD.
+**Root cause thật**: `winpe.wim` trong staging được chép từ ISO
+đang mount (F:) — mọi file trên đĩa quang đều mang thuộc tính
+**read-only**, và `std::fs::copy` giữ nguyên thuộc tính ở file
+đích. DISM /Mount-Wim là mount để SỬA (inject file) nên từ chối
+file read-only với đúng lỗi quyền 0xC1510111. Mọi file khác chép
+từ ISO (cây sources, boot.sdi khi lấy từ ISO) cũng mang thuộc
+tính này.
+
+**Đã sửa (chỉ wizard — `CaiDatWinTuDong.exe` 2.870.682 byte;
+`WinPEInstall.exe` và `CaiDatWinWinPE.exe` không đổi, md5 trùng
+v0.7.5):**
+
+1. **Fix chính — chuẩn hoá thuộc tính sau khi chép từ ISO:**
+   helper mới `clear_readonly_file` (metadata → set_readonly
+   (false) → set_permissions) và `clear_readonly_tree` (đệ quy,
+   trả số file đã đổi). Áp dụng tại: (a) toàn bộ cây
+   `staging\sources` ngay sau copy (log số file đã chuẩn hoá);
+   (b) `winpe.wim` ngay sau copy từ ISO (log rõ dòng 0xC1510111);
+   (c) `boot.sdi` đích trong `stage_boot_sdi` (ghi chú trong
+   dòng log sẵn có); (d) **kiểm lại ngay trong
+   `mount_inject_winpe` trước mỗi lần mount** — chốt chặn cuối
+   bao phủ cả file staging có sẵn từ lần chạy trước và bản WIM
+   vừa export.
+2. **Lỗi đọc được cho người dùng — diệt debug repr:** helper
+   `fmt_exit_code` (mã thập phân + hex `0x{:08X}`),
+   `last_error_line` (trích dòng lỗi tiêu biểu của chính công
+   cụ: ưu tiên dòng cuối chứa mã 0x..., rồi dòng "Error"/"Lỗi",
+   rồi dòng không rỗng cuối), `cmd_fail_msg` (ghép hai thứ
+   trên). Áp dụng tại cả 6 điểm format kết quả lệnh ngoài vào
+   thông điệp lỗi/hộp thoại trong wizard: DISM /Get-WimInfo
+   (trước đây còn lấy stderr — nơi DISM gần như không bao giờ
+   ghi lỗi; nay gộp stdout+stderr và trích từ đó), manage-bde
+   suspend BitLocker, cảnh báo pnputil /export-driver, bcdedit
+   trong register_bcd, DISM mount WinPE và DISM unmount
+   /Commit (hai điểm thực địa). Output đầy đủ vẫn vào log như
+   trước.
+3. **Chẩn đoán trước mount:** hàm mới `probe_winpe_wim` thay
+   closure chọn boot index cũ (vốn nuốt cả kết quả lẫn lỗi
+   /Get-WimInfo): ghi vào log kích thước file WIM + **toàn bộ**
+   output /Get-WimInfo + chi tiết của index được chọn, và lý
+   do chọn index — giữ nguyên logic chọn cũ (ưu tiên "Boot
+   Index" do DISM báo; không có thì index 2 nếu WIM có ≥2
+   index, else index đầu tiên). /Get-WimInfo lỗi → log lỗi đọc
+   được, tạm dùng index 1, mount/export kết luận sau.
+4. **Mount qua hàm chung `mount_inject_winpe`** (mount →
+   inject 4 file → unmount /Commit, output DISM vừa chảy vào
+   log vừa được thu lại để trích dòng lỗi). Hai thay đổi kèm
+   theo: các lệnh mount/unmount/export nay gọi kèm `/English`
+   như mọi lệnh DISM khác của wizard (trước đây thiếu — dòng
+   lỗi trích ra phụ thuộc ngôn ngữ Windows); và bước dọn
+   /Unmount-Wim /Discard sau mount THẤT BẠI chuyển sang
+   `run_capture` với một dòng log trung tính — mount hỏng thì
+   lệnh dọn này trả mã 50 và trước đây in như một lỗi thứ hai
+   gây nhiễu kết quả; nay nó không bao giờ thành lỗi được báo.
+5. **Export fallback — chỉ còn là lưới an toàn cuối** (giữ
+   theo chỉ đạo, sau khi fix thuộc tính đã xử lý nguyên nhân
+   đã xác nhận): mount bản gốc lỗi → `DISM /Export-Image
+   /SourceIndex:<boot index> /Compress:Max /Bootable` sang
+   `winpe_export.wim` (xoá file đích sót trước vì DISM append
+   vào file có sẵn; /Compress:Max là nén chuẩn không solid,
+   KHÔNG dùng recovery/LZMS) → probe lại bản xuất → mount +
+   inject bản xuất → **thay tên thành `winpe.wim`** (xoá bản
+   gốc, rename bản xuất). BCD vẫn trỏ `\<staging>\winpe.wim`
+   và stage.json/engine WinPE không hề biết có export xảy
+   ra — tên file nhất quán từ đầu tới cuối. Export hoặc mount
+   lần hai cũng lỗi → dừng (vẫn trước BCD, chưa phá huỷ gì)
+   bằng thông điệp ghép cả hai lỗi, đều dạng đọc được.
+
+Gói: `UtilityRebuild-v0.7.6.zip` (9.625.445 byte, 16 file,
+testzip sạch; drop_v0.7.6 = drop_v0.7.5 + wizard build lại +
+HUONG-DAN cập nhật). Toàn workspace build release sạch (0 lỗi,
+0 cảnh báo). **Chưa test trên máy thật** — ca test quyết định:
+chạy lại kịch bản cũ trên DESKTOP-J8LPB75, kỳ vọng log có dòng
+xoá read-only của winpe.wim, mount qua được, staging chạy hết
+tới BCD + hỏi reboot; nếu còn dừng, hộp thoại phải hiện mã
+thoát + dòng lỗi của chính DISM.
+
+## Sửa lỗi Boot Manager 0xc000000e — WIM mất cờ bootable + rà soát BCD/firmware (v0.7.7 — 2026-11-17)
+
+Người dùng test v0.7.6 trên máy thật: **staging hoàn tất trọn vẹn
+lần đầu tiên** (chép sources, xoá read-only, mount + inject
+WinPE, đăng ký BCD, reboot vào entry một lần) — nhưng Windows
+Boot Manager báo:
+
+> Status: **0xc000000e** — "A required device isn't connected or
+> can't be accessed."
+
+WinPE không hề nạp; quá trình wipe KHÔNG chạy, đĩa đích nguyên
+vẹn (mọi thao tác phá huỷ vẫn nằm trong WinPE như thiết kế).
+
+**Bằng chứng quyết định — install log của chính lần chạy đó
+(install-20261117-1335.log):** mọi lệnh bcdedit đều thành công
+và các phần tử BCD đúng NGUYÊN VĂN công thức ramdisk chuẩn.
+Nhưng chi tiết `DISM /Get-WimInfo` của index 2 trong boot.wim
+của ISO mod báo **`WIM Bootable : No`** và bước dò của wizard đã
+ghi "WIM không báo 'Boot Index'" — header WIM không mang boot
+index nào. boot.wim của bản mod này là build **26100.9457** trong
+khi install.wim là 19041 (mod trộn hai build); tác giả mod đóng
+gói lại boot.wim và làm mất cờ bootable ở header. Boot Manager
+mở được file ramdisk trên ổ Data nhưng không tìm thấy ảnh boot
+bên trong để nạp winload → 0xc000000e. Mount + /Commit của bước
+inject KHÔNG khôi phục cờ header này.
+
+**Đã sửa (chỉ wizard — `CaiDatWinTuDong.exe` 2.905.595 byte,
+md5 `1ef8974c…`; `WinPEInstall.exe` + `CaiDatWinWinPE.exe`
+không đổi, md5 trùng v0.7.6):**
+
+1. **Fix gốc rễ — chuẩn hoá cờ bootable của WIM sau inject**
+   (hàm mới `check_wim_bootable` + `ensure_winpe_bootable`, gọi
+   ở mốc 71% của exec_clean — sau khi cả hai đường mount hội tụ
+   về winpe.wim đã inject, TRƯỚC driver/autounattend/BCD):
+   kiểm chứng cờ bằng /Get-WimInfo (header có "Boot Index" > 0,
+   hoặc chi tiết index báo "WIM Bootable : Yes") và ghi toàn bộ
+   output + dòng kết luận vào log. Đã bootable → bỏ qua, log rõ.
+   Chưa bootable (hoặc không kết luận được — thận trọng theo
+   hướng an toàn) → xuất lại đúng index WinPE:
+   `DISM /Export-Image /SourceImageFile:<staging>\winpe.wim
+   /SourceIndex:<boot index>
+   /DestinationImageFile:<staging>\winpe_bootable.wim /Bootable
+   /Compress:Max` (xoá file đích sót trước vì DISM append) →
+   xoá bản gốc, rename bản xuất thành `winpe.wim` (đúng mẫu thay
+   tên của đường export dự phòng v0.7.6) → **kiểm chứng lại trên
+   chính file winpe.wim** (bản xuất một index: header phải báo
+   Boot Index / index 1 báo "WIM Bootable : Yes"). Export lỗi
+   hoặc kiểm chứng lại không đạt → dừng bằng lỗi đọc được
+   TRƯỚC đăng ký BCD và trước mọi lời mời reboot. BCD,
+   stage.json và engine WinPE vẫn chỉ thấy tên `winpe.wim` —
+   một WIM một-index bootable là đúng thứ chúng cần.
+2. **Dò firmware hai API + log giá trị thô** (struct
+   `FirmwareProbe` + `probe_firmware`, khai báo extern kernel32
+   ngay tại wizard — không mở thêm feature winapi, không đụng
+   qsu_common): (A) `GetFirmwareType` có tài liệu — 1=BIOS,
+   2=UEFI, 0=Unknown; kết quả dứt khoát 1/2 thì phán quyết theo
+   A. (B) trick cũ `GetFirmwareEnvironmentVariableW` (tên rỗng +
+   GUID toàn 0; Legacy ⇔ lỗi ERROR_INVALID_FUNCTION) chỉ còn là
+   đường dự phòng khi A không kết luận. Giá trị thô của cả hai
+   API + phán quyết được: đẩy vào log panel lúc quét (dòng
+   `[Firmware]`), ghi vào file log quét (dòng `Firmware raw:`),
+   ghi vào log cài đặt ngay đầu quá trình (dòng `Firmware:` qua
+   trường mới `ExecPlan.firmware_detail`), và ghi lại tại
+   register_bcd kèm tín hiệu thứ ba — đối chiếu
+   `bcdedit /enum {fwbootmgr}` (chỉ tồn tại trên máy UEFI):
+   khớp thì log xác nhận, lệch thì log CẢNH BÁO (chỉ đối chiếu,
+   phán quyết không đổi tại điểm đó). Bối cảnh: máy thực địa báo
+   "UEFI (MBR)" nhưng đĩa mang tên thiết bị kiểu Hyper-V Gen-1
+   "Virtual HD ATA Device" — từ nay mọi tín hiệu đều nằm trong
+   log để phân xử mà không cần thêm vòng gửi/nhận.
+3. **Chuỗi boot.sdi xoay theo firmware**: hai bản trong
+   `%WINDIR%\Boot\DVD` nay thử theo phán quyết — UEFI: bản
+   `EFI` trước, bản `PCAT` sau; Legacy: ngược lại. (Bản cũ luôn
+   PCAT trước; lần chạy v0.7.6 trên máy UEFI đã nạp đúng bản
+   PCAT vào staging — với WIM đã sửa, biến thể khớp firmware
+   loại trừ nốt nghi phạm thứ hai này.) Hai vị trí ISO giữ
+   nguyên ở đầu chuỗi, WinRE giữ cuối; mọi dòng log thử/dùng
+   nay kèm nhãn biến thể ("bản EFI — biến thể UEFI" /
+   "bản PCAT — biến thể BIOS" / ...), và một dòng log mở đầu
+   nêu thứ tự thử theo firmware.
+4. **Kiểm chứng BCD sau đăng ký — chế độ chẩn đoán log-only**
+   (hàm mới `verify_bcd`, gọi ngay sau `/bootsequence`): dump
+   `bcdedit /enum all` NGUYÊN VĂN vào log cài đặt (mọi lệnh enum
+   chạy qua run_logged như các lệnh BCD khác), rồi đối chiếu
+   từng phần tử trên output của loader / device options /
+   {bootmgr} và ghi dòng khớp/KHÔNG KHỚP. Chỉ dựa trên giá trị
+   không phụ thuộc ngôn ngữ (chuỗi ramdisk=..., winload path,
+   partition=..., GUID); systemroot/winpe là kiểm mềm. KHÔNG
+   chặn, KHÔNG gỡ entry — logic phần tử đã được log thực địa
+   chứng minh đúng nguyên văn, cổng chặn thật nằm ở bước WIM
+   (mục 1); dump này là bằng chứng để lần test sau đối chiếu
+   mà không cần thêm vòng gửi log.
+
+**Bảng đối chiếu phần tử BCD — bản cũ (≤ v0.7.6) vs v0.7.7:**
+
+| Phần tử | Bản cũ (≤ v0.7.6) | v0.7.7 |
+|---|---|---|
+| Device options: tạo object | `bcdedit /create /d "QSU WinPE Ramdisk" /device` | Không đổi |
+| `ramdisksdidevice` | `partition=<Data>:` | Không đổi; được đối chiếu lại trong dump chẩn đoán |
+| `ramdisksdipath` | `\<stagingFolder>\boot.sdi` (chỉ path, không volume) | Không đổi; được đối chiếu lại trong dump chẩn đoán |
+| Loader: tạo object | `bcdedit /create /d "QSU WinPE" /application osloader` | Không đổi |
+| Loader `device` | `ramdisk=[<Data>:]\<stagingFolder>\winpe.wim,{ramdiskoptions-guid}` | Không đổi; đối chiếu: ≥2 dòng (device + osdevice) chứa đúng chuỗi này trong `/enum` của loader |
+| Loader `osdevice` | Cùng chuỗi ramdisk như `device` | Không đổi (đếm chung với `device` ở trên) |
+| Loader `path` | UEFI: `\windows\system32\boot\winload.efi`; Legacy: `\windows\system32\winload.exe` — chọn theo `plan.uefi` | Logic không đổi, NHƯNG nguồn phán quyết đổi: `plan.uefi` nay từ probe hai API (GetFirmwareType ưu tiên) thay cho trick một API; path được đối chiếu lại trong dump |
+| Loader `systemroot` | `\windows` | Không đổi; kiểm mềm trong chẩn đoán |
+| Loader `winpe` | `yes` | Không đổi; kiểm mềm trong chẩn đoán |
+| Loader `detecthal` | `yes` | Không đổi |
+| Kích hoạt một lần | `bcdedit /bootsequence <loader-guid>` — không hề đụng displayorder | Không đổi; chẩn đoán xác nhận GUID loader xuất hiện trong `/enum {bootmgr}` (chỉ có thể nằm ở bootsequence) |
+| boot.sdi nạp vào staging | Chuỗi dự phòng thứ tự cố định: ISO sources → gốc ISO → **PCAT → EFI** → WinRE | ISO sources → gốc ISO → **theo firmware: UEFI thì EFI → PCAT, Legacy thì PCAT → EFI** → WinRE; log nêu biến thể đã nạp |
+| Cờ bootable của winpe.wim | Không kiểm tra — WIM của ISO mod mất "Boot Index" vẫn được đăng ký BCD y nguyên → Boot Manager 0xc000000e | **Kiểm chứng sau inject; chưa bootable thì export lại `/Bootable` + thay tên + kiểm chứng lại; không đạt thì dừng trước BCD** |
+| Đọc lại sau đăng ký | Không có — đăng ký xong ghi stage.json và mời reboot ngay | Dump `/enum all` nguyên văn + đối chiếu từng phần tử vào log (chẩn đoán, không chặn) |
+| Bằng chứng firmware trong log | Chỉ một dòng verdict "UEFI (MBR)" ở header | Giá trị thô hai API ở log panel + log quét + log cài đặt; thêm đối chiếu {fwbootmgr} tại register_bcd |
+
+Gói: `UtilityRebuild-v0.7.7.zip` (9.638.305 byte, 16 file,
+testzip sạch; drop_v0.7.7 = drop_v0.7.6 + wizard build lại +
+HUONG-DAN cập nhật). Toàn workspace build release sạch (0 lỗi,
+0 cảnh báo). **Chưa test trên máy thật** — ca test quyết định:
+chạy lại kịch bản cũ trên DESKTOP-J8LPB75, kỳ vọng log có dòng
+"Kiểm chứng WIM: ... 'WIM Bootable : No'" → export /Bootable →
+"Kiểm chứng đạt: winpe.wim sau chuẩn hoá BÁO BOOTABLE", boot.sdi
+nạp bản EFI (máy UEFI), dump `/enum all` nằm trong log, và máy
+reboot vào WinPE để engine cài thật.
+
+## v0.7.8 — Sửa chọn nhầm index WinPE (2026-11-17, sau ca test v0.7.7)
+
+- **Gốc rễ mới (đọc từ install-20261117-1335.log + ảnh lỗi v0.7.7):**
+  boot.wim của ISO mod có index 1 = "Microsoft Windows PE (amd64)",
+  index 2 = "Microsoft Windows Setup (amd64)". Quy ước cũ trong
+  `probe_winpe_wim` ("index 2 là ảnh WinPE boot") là sai với cả
+  boot.wim chuẩn (thường index 1 là WinPE, index 2 là Setup) lẫn
+  ISO mod này — nên v0.7.6/0.7.7 đã mount/inject/xuất lại nhầm ảnh
+  Setup, cờ /Bootable không bao giờ gắn đúng ảnh WinPE, kiểm chứng
+  lại báo `Some(false)` và dừng trước BCD (chốt an toàn hoạt động
+  đúng). Đây cũng là một phần nguyên nhân 0xc000000e của v0.7.6.
+- **Sửa:** `probe_winpe_wim` chọn index theo TÊN ảnh (chứa
+  "Windows PE", không chứa "Setup"); không phân biệt được bằng tên
+  thì rơi về index 1, rồi index đầu tiên. Log ghi rõ tên ảnh đã
+  chọn. Chốt chặn kiểm chứng sau xuất lại giữ nguyên.
+- **Phụ:** HUONG-DAN v0.7.8 bổ sung lưu ý máy Gen 2: cài Windows 11
+  chuẩn làm máy nền phải bật TPM ảo (Settings → Security → Enable
+  Trusted Platform Module, kèm Secure Boot template Microsoft
+  Windows), không bật sẽ bị chặn "This PC can't run Windows 11".
+- Gói: `~/workspace/UtilityRebuild-v0.7.8.zip` (9.640.837 byte,
+  16 file, testzip sạch; drop_v0.7.8 = drop_v0.7.7 + wizard
+  `CaiDatWinTuDong.exe` build lại 2.911.183 byte + HUONG-DAN cập
+  nhật). Build release sạch (0 lỗi, 0 cảnh báo), đã xác thực binary
+  trong zip chứa chuỗi mới. **Chưa test trên máy thật; chỉ gửi khi
+  anh nhắn "gửi" lúc đang ở máy** — ca test quyết định: chạy lại
+  kịch bản cũ, kỳ vọng log chọn index 1 (WinPE thật), export
+  /Bootable rồi "Kiểm chứng đạt: ... BÁO BOOTABLE".
+
+## v0.7.9 — Cửa sổ wizard thích ứng kích thước màn hình (2026-11-17)
+
+- **Bối cảnh:** thực địa trên PC thật màn hình nhỏ — cửa sổ wizard
+  cố định (ngoài 1060x1102, khung WS_CAPTION | WS_SYSMENU không
+  kéo giãn được) tràn khỏi màn hình, khối đáy (thanh tiến độ + ô
+  log + nút TIẾN HÀNH) bị khuất; người dùng yêu cầu cửa sổ tự
+  vừa/thu nhỏ được.
+- **Phạm vi:** CHỈ crate `cai_dat_win`, CHỈ trình bày/bố cục.
+  Không đụng logic cài đặt — sửa chọn index WinPE của v0.7.8 giữ
+  nguyên; mọi crate khác không đổi (đối chứng: WinPEInstall.exe
+  trong gói trùng md5 v0.7.8 `bc2f6fbf…`, mọi file khác trong zip
+  ngoài wizard + HUONG-DAN đều trùng byte với v0.7.8).
+- **Cách làm:**
+  - `build_ui` ghi rect thiết kế của cả 52 control vào bảng
+    `Model.layout` (đọc thẳng từ control vừa dựng qua
+    position()/size(), không chép tay toạ độ) kèm vai trò bố cục,
+    và mốc `Model.design_client` = kích thước client đo ngay khi
+    cửa sổ tạo theo đúng thông số v0.7.8.
+  - `adapt_window_frame` (gọi một lần trong build_ui): thêm
+    WS_THICKFRAME | WS_MAXIMIZEBOX tại chỗ qua
+    SetWindowLongPtrW + SWP_FRAMECHANGED, đo khung mới rồi đặt
+    kích thước ngoài sao cho client = mốc thiết kế — màn hình đủ
+    lớn thì bố cục trùng v0.7.8 từng pixel dù khung dày hơn; màn
+    hình nhỏ thì chặn ở vùng làm việc (SPI_GETWORKAREA); cửa sổ
+    được căn giữa vùng làm việc.
+  - `apply_layout` (luỹ đẳng — hàm thuần của bảng thiết kế +
+    kích thước client hiện tại, áp bằng DeferWindowPos một lượt):
+    khối đáy bám đáy; 5 danh sách co giãn (ISO FLEX_ISO, danh mục
+    FLEX_CAT, phiên bản FLEX_ED, phân vùng FLEX_PARTS, log
+    FLEX_LOG) hấp thụ delta chiều cao — thừa chia theo trọng số
+    [2,1,1,1,3] (log nở nhất), thiếu chia theo [3,2,2,2,1] (log
+    co ít nhất) với sàn chiều cao [30,30,30,30,44] nên control
+    không bao giờ chồng nhau (thiếu vượt khả năng co thì chỉ
+    khuất đáy, không vỡ bố cục); ngang: cột phải bám lề phải
+    (ShiftRight), danh sách/nhãn dài nở theo bề ngang (Grow).
+    Chạy lúc khởi động (trong finish_build, vì WM_SIZE lúc adapt
+    xảy ra trước khi handler được gắn) và mỗi
+    OnResize/OnWindowMaximize — NWG tách maximize thành sự kiện
+    riêng nên phải nghe cả hai, đối chiếu HWND cửa sổ chính để bỏ
+    qua sự kiện của control con.
+  - Kích thước tối thiểu 900x640 áp qua WM_GETMINMAXINFO bằng raw
+    handler (bind_raw_event_handler của NWG, id 0x10001); handler
+    rò có chủ đích (Box::leak) như fonts.
+  - Tương tác với cơ chế cũ giữ nguyên: `shift_window_for_exec`
+    chỉ dịch vị trí (SWP_NOSIZE — không phát sinh bố cục lại),
+    `restore_window_pos` khôi phục cả kích thước thì WM_SIZE tự
+    cân lại bố cục theo rect đã lưu.
+- Gói: `~/workspace/UtilityRebuild-v0.7.9.zip` (9.654.306 byte,
+  16 file, testzip sạch; drop_v0.7.9 = drop_v0.7.8 + wizard
+  `CaiDatWinTuDong.exe` build lại 2.924.759 byte, md5
+  `17f1160a…` + HUONG-DAN cập nhật mục v0.7.9). Build release
+  sạch (0 lỗi, 0 cảnh báo). **Chưa test trên máy thật** — ca
+  test: mở wizard trên màn hình nhỏ/session từ xa thấp (khối đáy
+  phải thấy trọn), kéo giãn + phóng to (danh sách và ô log nở
+  theo, cột phải bám lề), màn hình lớn (bố cục như v0.7.8), chạy
+  một ca cài đặt để xác nhận shift/restore cửa sổ lúc thực thi
+  vẫn như cũ.
+
+## v0.7.10 — Wizard gom thành 2 tab, cửa sổ gọn hẳn (2026-11-17)
+
+- **Bối cảnh:** thực địa tiếp theo của v0.7.9 trên PC thật — dù cửa
+  sổ đã tự co theo vùng làm việc, biểu mẫu một cột vẫn quá cao:
+  nút TIẾN HÀNH CÀI ĐẶT nằm dưới taskbar, kỹ thuật viên phải bật
+  ẩn taskbar mới bấm được. Người dùng yêu cầu gom lại thành 2 tab
+  và cân đối lại biểu mẫu.
+- **Phạm vi:** CHỈ crate `cai_dat_win`, CHỈ trình bày/bố cục.
+  Không đụng một dòng logic cài đặt nào (preflight, ISO/WIM,
+  staging, BCD, đĩa, stage.json giữ nguyên hành vi từng byte);
+  mọi crate khác không đổi — đối chứng: trong gói chỉ
+  `CaiDatWinTuDong.exe` khác byte so với v0.7.9, kèm HUONG-DAN.
+- **Cách làm:**
+  - Dùng `nwg::TabsContainer` + `nwg::Tab` thật của NWG 1.0.13
+    (không phải trang giả lập): NWG tự hiện trang được chọn / ẩn
+    trang còn lại khi đổi tab (TCN_SELCHANGE) và tự khớp kích
+    thước hai trang khi khung đổi kích thước (xử lý WM_SIZE nội
+    bộ); handle của mọi control con giữ nguyên hiệu lực khi trang
+    bị ẩn nên refresh/render log/cập nhật lập trình chạy y như cũ,
+    kể cả trên trang đang ẩn. Không tự chuyển tab khi bắt đầu cài.
+  - Tab 1 "Nguồn cài đặt": mục 1 tiền đề (5 dòng trạng thái + chọn
+    ổ Data + Quét lại), mục 2 nguồn ISO (list ISO + Chọn ISO, kho
+    online + Tải danh mục/Tải ISO, thanh tải + nhãn), mục 3 phiên
+    bản (list edition + thông tin).
+  - Tab 2 "Tuỳ chọn cài đặt": mục 4 (hai nút chế độ cài, hai nút
+    chế độ phân vùng, khối đĩa đích: combo + hint + list phân
+    vùng + cảnh báo + ô serial), tên máy/tài khoản/mật khẩu, nút
+    Tuỳ Chỉnh Windows + dòng trạng thái staging.
+  - Khối ghim ở SÂN CHÍNH dưới khung tab (luôn thấy ở cả hai tab):
+    thanh tiến độ thực thi + nhãn, ô log, TIẾN HÀNH CÀI ĐẶT, Đóng.
+    `main_window_hwnd` (GetParent của btn_close) và owner hộp chọn
+    file trong `on_browse` không đổi vì btn_close vẫn là con trực
+    tiếp của cửa sổ chính.
+  - Kích thước thiết kế: ngoài 1036x748 (client ~1020x709, trang
+    tab ~977x485) — trên màn hình 1366x768 (vùng làm việc ~728)
+    toàn bộ cửa sổ nằm gọn trên taskbar ngay ở kích thước thiết
+    kế, không cần co.
+  - Bố cục thích ứng v0.7.9 mở rộng theo 3 sân toạ độ: LayoutItem
+    thêm trường `group` (GROUP_MAIN/GROUP_TAB1/GROUP_TAB2),
+    `apply_layout` tính riêng từng sân theo client của sân đó;
+    `layout_window` áp sân chính trước (khung tab đổi kích thước
+    → NWG khớp trang đồng bộ) rồi đo client trang và áp hai sân
+    tab. Khung tab là phần tử co giãn mới FLEX_TABS (trọng số
+    nở 2 / co 2, sàn 240) ở sân chính cùng FLEX_LOG;
+    `flex_height_deltas` nâng lên 6 ô và CHỈ chia delta cho các ô
+    có mặt trong sân (design_h > 0) — phần dư nở dồn vào ô có
+    trọng số nở lớn nhất của sân (trước đây cứng vào FLEX_LOG,
+    đúng khi cả 5 ô luôn có mặt). Kiểm tra biên bằng số: ở mức co
+    tối đa của cửa sổ tối thiểu 900x640, sân tab 1 cần co 72 ≤
+    khả năng 118, tab 2 cần 72 ≤ khả năng 74 của list phân vùng —
+    không control nào bị cắt.
+  - Mọi control giữ nguyên ID/handler/hành vi; `update_part_ui`
+    (ShowWindow khối đĩa) chạy y như cũ trên trang 2 đang ẩn/hiện.
+  - Hàm/đoạn đã sửa trong `cai_dat_win/src/main.rs`: hằng FLEX_*
+    + GROUP_* (mở rộng), `LayoutItem` (thêm group), `Model` (thêm
+    design_page), `App` (thêm tabs/tab_src/tab_opt),
+    `build_ui` (dựng lại toàn bộ: cửa sổ 1036x748, khung tab +
+    hai trang, mọi control gắn cha mới + toạ độ mới, bảng bố cục
+    ghi thêm group, đo design_page), `flex_height_deltas`,
+    `apply_layout`, `layout_window`. Xoá hằng HEADER_H (chỉ còn
+    được dùng bởi toạ độ cũ). Không hàm nghiệp vụ nào bị đụng.
+- Gói: `~/workspace/UtilityRebuild-v0.7.10.zip` (9.646.666 byte,
+  16 file, testzip sạch; drop_v0.7.10 = drop_v0.7.9 + wizard
+  `CaiDatWinTuDong.exe` build lại 2.923.469 byte, md5
+  `59914d3a…` — đã đối chứng md5 của file trong zip — + HUONG-DAN
+  cập nhật mục v0.7.10). Build release sạch (0 lỗi, 0 cảnh báo).
+  **Chưa test trên máy thật** — ca test: mở wizard trên màn hình
+  1366x768 (nút TIẾN HÀNH phải thấy và bấm được ngay, không cần
+  ẩn taskbar), đổi qua lại 2 tab, chạy một ca cài ở cả hai chế độ
+  (khối đĩa ở tab 2 hiện/ẩn đúng theo chế độ), kéo giãn + phóng
+  to (ba sân co giãn đúng, khối ghim bám đáy), kiểm tra hộp chọn
+  ISO mở từ tab 1.
+
+## v0.7.11 — Gỡ cổng kiểm tra cờ bootable của WinPE (2026-11-17)
+
+- **Chỉ thị người dùng (nguyên văn):** "Bỏ qua kiểm tra. Các tool
+  khác cài được" — gỡ cổng kiểm chứng bootable, dùng WinPE nguyên
+  trạng của ISO như các tool khác.
+- **Lịch sử thực địa của cổng (v0.7.7 → v0.7.10):** cổng gồm
+  `check_wim_bootable` (phân tích text output DISM /Get-WimInfo:
+  tìm "Boot Index" ở header, "WIM Bootable : Yes/No" ở chi tiết
+  index) + `ensure_winpe_bootable` (chưa bootable thì xuất lại
+  /Bootable rồi kiểm chứng lại, không đạt thì dừng TRƯỚC đăng ký
+  BCD). Kết quả thực địa: **chặn oan 4/4 lần chạy** —
+  (1) v0.7.7 máy ảo Legacy + ISO mod: xuất lại vẫn Some(false);
+  (2) v0.7.7 PC UEFI thật + ISO mod: y hệt; (3) v0.7.9 (đã có sửa
+  chọn index theo tên của v0.7.8) PC UEFI thật + ISO mod: y hệt;
+  (4) v0.7.9 PC UEFI thật + **ISO Microsoft gốc**: vẫn xuất lại
+  và vẫn Some(false) — bằng chứng quyết định là cơ chế đọc text
+  DISM tự nó phán sai, không phải ISO hỏng. Cả 4 lần chốt chặn
+  đều dừng trước BCD nên không máy nào bị xoá hay hỏng boot.
+- **Thay đổi (CHỈ crate `cai_dat_win`, đúng một điểm):**
+  - Xoá hẳn hai hàm `check_wim_bootable` và
+    `ensure_winpe_bootable` cùng toàn bộ doc-comment của chúng
+    (190 dòng). Mọi helper chúng dùng (`dism_wim_info`,
+    `log_dism_output`, `parse_kv`, `kv_get`,
+    `clear_readonly_file`, `cmd_fail_msg`) đều còn được
+    probe/mount dùng chung nên không phát sinh dead code.
+  - Tại `exec_clean`, bước 71% cũ ("Chuẩn hoá WinPE (cờ
+    bootable)..." + gọi cổng, lỗi thì `fail` + dừng) thay bằng:
+    nhãn tiến độ "Hoàn tất chuẩn bị WinPE..." + một dòng log
+    "Bỏ qua kiểm tra cờ bootable (theo yêu cầu) — dùng WinPE
+    nguyên trạng của ISO." rồi flow đi thẳng sang bước driver
+    74% → unattend → đăng ký BCD. Comment tại `register_bcd`
+    (nơi mô tả cổng là "cổng chặn thật") cũng sửa cho khớp.
+  - **KHÔNG đụng:** `probe_winpe_wim` (chọn index) giữ nguyên;
+    đường export dự phòng khi MOUNT lỗi trong luồng mount
+    (`DISM /Export-Image /Compress:Max /Bootable` — đường khôi
+    phục mount của v0.7.6, không phải cổng) giữ nguyên từng byte;
+    giao diện 2 tab v0.7.10, staging, BCD, đĩa, stage.json và
+    mọi crate khác giữ nguyên.
+- **Ghi chú an toàn (đứng vững sau khi gỡ cổng):** mục boot WinPE
+  vẫn là boot MỘT LẦN (`/bootsequence`) — WinPE không lên được
+  thì lần khởi động kế tiếp máy tự về Windows cũ, chưa có gì bị
+  xoá; việc xoá/chia ổ chỉ xảy ra trong WinPE sau khi engine đối
+  chiếu lại serial ổ đích. Cái mất đi chỉ là một lớp phán quyết
+  bằng text đã chứng minh là phán sai 4/4.
+- Gói: `~/workspace/UtilityRebuild-v0.7.11.zip` (9.642.196 byte,
+  16 file, testzip sạch; drop_v0.7.11 = drop_v0.7.10 + wizard
+  `CaiDatWinTuDong.exe` build lại 2.910.664 byte, md5
+  `c9f70ceb…` — đã đối chứng md5 của file trong zip). Build
+  release sạch (0 lỗi, 0 cảnh báo, đã ép biên dịch lại toàn bộ
+  crate để xác nhận). **Chưa test trên máy thật** — ca test quyết
+  định: chạy lại kịch bản cũ trên PC UEFI thật với ISO mod: kỳ
+  vọng log có dòng "Bỏ qua kiểm tra cờ bootable…", staging chạy
+  một mạch tới đăng ký BCD, máy reboot vào WinPE và engine bắt
+  đầu cài thật.
+
+## v0.7.12 — Wizard thêm tab Hướng dẫn + Tài liệu, log có dòng [Cơ chế] (2026-11-17)
+
+- **Phạm vi: CHỈ tài liệu + giao diện, trên đúng cơ chế v0.7.11.**
+  Không một dòng logic cài đặt nào thay đổi: staging, chọn index,
+  mount/inject, boot.sdi, BCD, đĩa, stage.json, engine — tất cả
+  giữ nguyên từng byte hành vi. File nguồn duy nhất bị đụng là
+  `rust/cai_dat_win/src/main.rs`; trong gói, chỉ
+  `modules/CaiDatWinTuDong.exe` khác v0.7.11 (đối chứng diff
+  toàn bộ drop: mọi binary còn lại trùng byte).
+- **Hai tab mới (3 "Hướng dẫn", 4 "Tài liệu"):** khung
+  TabsContainer của v0.7.10 mở rộng từ 2 lên 4 trang, đúng cách
+  làm cũ — NWG tự hiện/ẩn trang và khớp kích thước MỌI trang con
+  khi khung đổi kích thước (EnumChildWindows trong WM_SIZE của
+  TabsContainer), handle control con giữ nguyên hiệu lực khi
+  trang ẩn nên các luồng cập nhật lập trình không bị ảnh hưởng.
+  Mỗi trang mới chứa đúng MỘT `nwg::TextBox` chỉ-đọc phủ toàn
+  trang (8,6 / 961×466 ở mốc thiết kế): TextBox của NWG mặc định
+  đã nhiều dòng + WS_VSCROLL, thêm ES_READONLY bằng cùng helper
+  `set_edit_style` như ô log; nội dung lấy từ hai hằng
+  `HUONG_DAN_TEXT` / `TAI_LIEU_TEXT` trong main.rs, đổi
+  `\n` → `\r\n` lúc dựng (ô EDIT nhiều dòng cần CRLF), giới hạn
+  ký tự nới lên 1.000.000.
+  - Tab "Hướng dẫn": 8 bước cho người dùng cuối (chuẩn bị ISO
+    trên ổ Data + cắm sạc → quét máy → chọn ISO/phiên bản → chọn
+    chế độ cài → phân vùng + ổ đích + gõ serial → tên
+    máy/tài khoản, mật khẩu để trống được → bấm TIẾN HÀNH →
+    máy tự reboot và tự cài) + mục "Nếu WinPE không lên được"
+    (boot một lần nên tự về Windows cũ).
+  - Tab "Tài liệu": tài liệu cơ chế của CHÍNH bản build này
+    (10 mục: staging + marker/stage.json; chọn ảnh WinPE theo
+    Boot Index/tên; boot.sdi theo firmware; driver offline;
+    /bootsequence một lần; nhận diện serial; preserve/wipeDisk
+    + layout GPT/MBR + WinRE; custom chép nguyên trạng; lý do
+    gỡ cổng bootable ở v0.7.11; log). Bản sao file:
+    `docs/co_che_v0.7.12.md` — sửa nội dung phải sửa cả hai nơi.
+- **Bố cục:** thêm hai sân GROUP_TAB3/GROUP_TAB4. Ô text của mỗi
+  trang đăng ký flex với chỉ số FLEX_TABS: trong lần gọi
+  `apply_layout` cho sân của nó, nó là phần tử co giãn DUY NHẤT
+  nên hấp thụ trọn delta chiều cao của trang — không cần thêm
+  chỉ số flex mới, không đụng `flex_height_deltas`. Khối ghim
+  dưới khung tab, kích thước thiết kế 1036×748, chặn vùng làm
+  việc và min 900×640 giữ nguyên.
+- **Dòng [Cơ chế] trong log:** 9 lệnh `log.line("[Cơ chế] …")`
+  cộng vào `exec_clean` tại các bước chính — Logger ghi đồng
+  thời ra file install-*.log và ô log panel như mọi dòng khác:
+  (a) staging trên ổ Data + marker/stage.json (đầu exec_clean);
+  (b1) chọn ảnh WinPE theo Boot Index/tên (sau probe); (b2) vì
+  sao không kiểm tra cờ bootable (bước 71%, cạnh dòng cũ của
+  v0.7.11); (c) boot.sdi theo firmware (sau khi stage xong
+  boot.sdi); (d) inject driver offline (bước 74%); (e) mục boot
+  một lần /bootsequence (bước 84%, trước register_bcd); (f)
+  nhận diện ổ đích bằng serial + (g) chế độ phân vùng đang dùng
+  — preserve một dòng riêng, wipeDisk một dòng riêng ghi layout
+  GPT/MBR (bước 92%, trước khi ghi stage.json). Thuần chuỗi
+  log: không điều kiện, không nhánh, không đổi thứ tự các bước.
+- Gói: `~/workspace/UtilityRebuild-v0.7.12.zip` (9.649.797 byte,
+  16 file, testzip sạch; drop_v0.7.12 = drop_v0.7.11 + wizard
+  `CaiDatWinTuDong.exe` build lại 2.929.925 byte, md5
+  `e975fd2e…` — đã đối chứng md5 của file trong zip). Build
+  release sạch (0 lỗi, 0 cảnh báo, đã ép biên dịch lại toàn bộ
+  crate để xác nhận). **Chưa test trên máy thật** — ca test:
+  mở wizard, qua lại đủ 4 tab (hai tab tài liệu đọc được, cuộn
+  được, không tab nào che khối ghim), chạy một ca cài mới và
+  đối chiếu log có đủ các dòng [Cơ chế] theo đúng thứ tự bước.
+
+## v0.7.13 — Chế độ phân vùng "rebuild": cài lại phân vùng hệ thống, giữ phân vùng data (2026-11-17)
+
+- **Nhu cầu (người dùng, 2026-11-17):** tối ưu phần đĩa cho máy
+  CHỈ CÓ 1 ĐĨA — chọn các phân vùng EFI, MSR, Windows cũ trên
+  chính đĩa đó, xoá và cài lên đúng các phân vùng này, phân vùng
+  data trên cùng đĩa giữ lại. Hai chế độ cũ không đáp ứng được:
+  preserve chỉ format phân vùng OS (không chia lại được khi
+  layout cũ lệch chuẩn), wipeDisk cấm tuyệt đối đĩa chứa
+  staging/data (máy 1 đĩa = staging nằm trên chính đĩa đích).
+- **stage.json:** `partitionMode` nhận thêm giá trị `"rebuild"`;
+  mảng mới `"rebuildPartitions"`: mỗi mục `{kind, sizeBytes,
+  gptGuid, offsetBytes}` cho từng phân vùng sẽ xoá, chụp từ liệt
+  kê đĩa lúc staging. `qsu_common::stage::RebuildPart` +
+  `StageConfig.rebuild_partitions` (from_json mặc định vec rỗng
+  → stage.json cũ hành vi y nguyên v0.7.12). `targetDiskSerial`
+  nay dùng cho cả wipeDisk và rebuild.
+- **qsu_common::disk:** `DiskPartition` có thêm `part_guid` (GUID
+  DUY NHẤT của phân vùng GPT — PartitionId từ
+  IOCTL_DISK_GET_DRIVE_LAYOUT_EX; rỗng với MBR và đường dự phòng)
+  + RawPart tương ứng. Thêm `volume_disk_extent(letter)` (extent
+  vật lý của một volume theo ký tự ổ). Thêm khối REBUILD:
+  `rebuild_layout(region, uefi)` (None nếu vùng < boot+MSR+
+  Recovery+Windows 10GB), `rebuild_script` (xoá theo số phân
+  vùng LIVE, offset giảm dần; tạo mới GHIM offset bằng KB vào
+  đúng vùng trống; GPT EFI 260/MSR 16/Windows/Recovery 600 +
+  GUID WinRE + attributes; MBR SysRes 100 active/Windows/
+  Recovery 600 id 27; KHÔNG clean/convert), và
+  `execute_rebuild(...)` theo đúng khuôn execute_wipe: liệt kê
+  lại + đối chiếu serial → đối chiếu từng mục spec (GPT theo
+  GUID, MBR theo offset+size ±1MB, đúng 1 khớp, không khớp
+  trùng) → chứng minh extent staging không giao danh sách xoá
+  → kiểm tra liên tục (kề nhau ±1MB) → kiểm tra đủ chỗ — TẤT CẢ
+  trước khi xoá → chạy diskpart → xác minh phân vùng mới trong
+  vùng + mọi phân vùng giữ lại còn nguyên offset/size.
+- **Wizard:** `partition_wipe: bool` thay bằng enum `PartMode`
+  {Preserve, WipeDisk, Rebuild} (Model + ExecPlan;
+  `stage_str()`). Radio thứ ba "Cài lại phân vùng hệ thống (giữ
+  data)" (hàng radio co còn 312px/nút). `lst_disk_parts` đổi từ
+  ListBox sang **ListView** 4 cột (Phân vùng/Loại/Dung lượng/Ghi
+  chú) + helper checkbox Win32 thô (cùng khuôn Tuỳ Chỉnh/Dọn
+  Rác, NHƯNG hằng số `LVS_EX_CHECKBOXES` ở đây là **0x4** — giá
+  trị đúng theo winapi/commctrl; hai module cũ đang dùng 0x400
+  = LVS_EX_INFOTIP, lỗi tiềm ẩn ghi nhận riêng, ngoài phạm vi
+  bản này). Phân loại phân vùng (`classify_partition`, theo ký
+  tự ổ + serial volume, staging xét trước Windows): Windows cũ
+  = tick + khoá; EFI/MSR/Recovery/System = tick sẵn, bỏ được;
+  staging = khoá không-tick ("được bảo vệ"); data = khoá
+  không-tick ("giữ nguyên"). Ép hợp lệ qua handler
+  OnListViewItemChanged (`enforce_rebuild_checks`); trạng thái
+  tick được chụp lại khi vẽ lại (`snapshot_rebuild_checks` +
+  `Model.rebuild_checks/parts_disk`). `disk_block_reason` nhận
+  thêm PartMode: rebuild cho phép đĩa chứa Data, cấm đĩa
+  from_fallback, không áp ngưỡng 25GB của wipe. Xác nhận mức
+  wipe: tóm tắt liệt kê từng phân vùng sẽ xoá + các phân vùng
+  giữ nguyên + bắt buộc gõ serial đĩa; wizard kiểm lại độc lập
+  (phân vùng bảo vệ/data không bao giờ vào danh sách xoá; vùng
+  đã chọn ≥ (876|700)MB + 10GB). Log cài đặt thêm dòng [Cơ chế]
+  riêng cho rebuild (cạnh dòng wipe/preserve ở bước 92%).
+- **Engine (winpe_install):** nhánh rebuild mới — thiếu serial
+  hoặc rebuildPartitions rỗng → **exit 13**; không tìm thấy đĩa
+  theo serial → 13; đĩa Data trùng đĩa đích thì BẮT BUỘC đọc
+  được extent của nó (không đọc được → 13), khác đĩa thì thôi;
+  `execute_rebuild` Err → 13. Exit 13 = "rebuild bị chặn ở khâu
+  đối chiếu/kiểm tra — đĩa chưa bị đụng vào ở các lỗi đối
+  chiếu" (phân biệt với 10/11/12 của wipe). Sau khi chia: format
+  riêng được bỏ qua như wipe, WinRE chạy theo recovery letter
+  mới, bcdboot /f tường minh trỏ vào EFI MỚI (hai biến
+  wipe_boot/recovery_letter đổi tên thành layout_* dùng chung
+  cho wipe + rebuild). preserve/wipeDisk không đổi hành vi.
+- **Tài liệu:** tab "Tài liệu" §6 (câu bảo vệ staging theo từng
+  chế độ) + §7 đổi thành "BA CHẾ ĐỘ PHÂN VÙNG" với đoạn REBUILD
+  đầy đủ; tab "Hướng dẫn" BƯỚC 5 thêm mục rebuild; bản sao
+  `docs/co_che_v0.7.13.md` (đã đối chiếu khớp từng chữ với
+  TAI_LIEU_TEXT); HUONG-DAN.txt có mục v0.7.13 + 4 ca test ưu
+  tiên (đầu bảng: máy 1 đĩa EFI+MSR+C+D data → rebuild → D
+  nguyên vẹn, Windows mới boot được).
+- Gói: `~/workspace/UtilityRebuild-v0.7.13.zip` (9.706.517
+  byte, 16 file, testzip sạch; drop_v0.7.13 = drop_v0.7.12 +
+  wizard `CaiDatWinTuDong.exe` build lại 3.010.817 byte, md5
+  `f5797b64…` + engine `modules/install/WinPEInstall.exe`
+  build lại 1.650.242 byte, md5 `42edf8b0…` — đã đối chứng md5
+  của hai file trong zip khớp bản trong drop). Build release
+  sạch (0 lỗi, 0 cảnh báo, ép biên dịch lại các crate đã đụng).
+  **Chưa test trên máy thật** — ca test quyết định: máy test
+  demo 1 đĩa theo mục HUONG-DAN ở trên.
+
+## Khác biệt có chủ đích so với bản gốc
+
+- Không cổng key bản quyền, không biến môi trường "token" khóa module.
+- Không telemetry, không tự cài root CA, không ngoại lệ Defender,
+  không tự cập nhật từ GitHub của tác giả.
+- Launcher dùng cửa sổ Windows Forms chuẩn (có viền/title bar) thay cho
+  cửa sổ không viền vẽ tay của bản gốc; lưới nút, nhãn và thứ tự giữ nguyên.
+- Module driver bỏ liên kết credit ở footer của bản gốc.

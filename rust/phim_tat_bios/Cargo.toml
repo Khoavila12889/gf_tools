@@ -1,0 +1,14 @@
+[package]
+name = "phim_tat_bios"
+version = "0.1.0"
+edition = "2021"
+description = "QSU Phím Tắt BIOS - bảng tra phím vào BIOS/Boot Menu theo hãng máy"
+
+[[bin]]
+name = "PhimTatBIOS"
+path = "src/main.rs"
+
+[dependencies]
+native-windows-gui = "1.0"
+unicode-normalization = "0.1"
+winapi = { version = "0.3", features = ["shellapi", "winuser", "winerror", "wingdi", "winnt", "commctrl"] }

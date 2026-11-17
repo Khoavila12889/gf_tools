@@ -1,0 +1,14 @@
+[package]
+name = "quan_ly_update"
+version = "0.1.0"
+edition = "2021"
+description = "QSU Quản Lý Update Windows - bật/tắt Windows Update, kiểm tra cập nhật, đặt lại thành phần WU"
+
+[[bin]]
+name = "QuanLyUpdateWindows"
+path = "src/main.rs"
+
+[dependencies]
+qsu_common = { path = "../qsu_common" }
+native-windows-gui = "1.0"
+winapi = { version = "0.3", features = ["shellapi", "winuser", "winreg", "winerror", "wingdi", "winnt", "commctrl"] }

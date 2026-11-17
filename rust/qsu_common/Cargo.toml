@@ -1,0 +1,26 @@
+[package]
+name = "qsu_common"
+version = "0.1.0"
+edition = "2021"
+description = "Thư viện dùng chung cho các module QSU (log, lệnh ngoài, JSON tối giản, SHA-256, thông tin hệ thống)"
+
+[dependencies]
+winapi = { version = "0.3", features = [
+    "errhandlingapi",
+    "fileapi",
+    "handleapi",
+    "ioapiset",
+    "minwinbase",
+    "processthreadsapi",
+    "securitybaseapi",
+    "shellapi",
+    "sysinfoapi",
+    "winbase",
+    "winerror",
+    "winhttp",
+    "winioctl",
+    "winnt",
+    "winreg",
+    "winsvc",
+    "winuser",
+] }

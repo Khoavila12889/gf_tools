@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "launcher",
+    "qsu_common",
+    "cai_dat_win",
+    "winpe_install",
+    "backup_restore_driver",
+    "tat_bitlocker",
+    "sao_luu_wifi",
+    "don_rac",
+    "quan_ly_update",
+    "phim_tat_bios",
+    "tuy_chinh_windows",
+    "cai_dat_win_winpe",
+]
+resolver = "2"

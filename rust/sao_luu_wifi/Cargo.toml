@@ -1,0 +1,14 @@
+[package]
+name = "sao_luu_wifi"
+version = "0.1.0"
+edition = "2021"
+description = "QSU Sao Lưu / Quản Lý Wifi - sao lưu, khôi phục hồ sơ Wifi và xem mật khẩu đã lưu"
+
+[[bin]]
+name = "SaoLuuWifi"
+path = "src/main.rs"
+
+[dependencies]
+qsu_common = { path = "../qsu_common" }
+native-windows-gui = "1.0"
+winapi = { version = "0.3", features = ["shellapi", "winuser", "winerror", "wingdi", "winnt", "commctrl"] }

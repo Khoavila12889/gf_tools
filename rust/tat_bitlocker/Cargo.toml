@@ -1,0 +1,14 @@
+[package]
+name = "tat_bitlocker"
+version = "0.1.0"
+edition = "2021"
+description = "QSU Tắt BitLocker - xem trạng thái và tắt mã hoá BitLocker theo từng ổ đĩa"
+
+[[bin]]
+name = "TatBitlocker"
+path = "src/main.rs"
+
+[dependencies]
+qsu_common = { path = "../qsu_common" }
+native-windows-gui = "1.0"
+winapi = { version = "0.3", features = ["shellapi", "winuser", "winerror", "wingdi", "winnt", "commctrl"] }
