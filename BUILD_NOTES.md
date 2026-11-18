@@ -1488,6 +1488,108 @@ reboot vào WinPE để engine cài thật.
   máy thật** — ca test quyết định là ca ưu tiên trong
   HUONG-DAN.
 
+## v0.7.18 — Hiển thị tiến trình trong WinPE: console là bề mặt chính + màn hình toàn màn hình tông xanh (2026-11-18)
+
+- **Bằng chứng thực địa (winpe-20261117-1852.log):** ca chạy
+  bị tưởng là "treo chết" thực ra engine chạy KHOẺ suốt buổi:
+  bản sửa `ensure_boot_letter` của v0.7.16 thành công (phân
+  vùng EFI thiếu ký tự → engine tự gán — S: bận nên lấy T: —
+  probe truy cập thật đạt), rồi DISM bung ảnh stream tới
+  **82%** thì người vận hành tắt nguồn vì tưởng máy treo.
+  Khuyết điểm DUY NHẤT là tính hiển thị: engine không có bề
+  mặt tiến trình nào cả — cửa sổ tiến trình không hề xuất
+  hiện trong WinPE của ISO mod (thu nhỏ console launcher thì
+  desktop trống trơn), còn console của qsu_start — vốn HIỆN
+  rõ suốt buổi — lại trống vì engine chỉ ghi tiến trình vào
+  file log, không in một chữ nào ra console. Người dùng xác
+  nhận chẩn đoán: phải chờ thì được, nhưng màn hình đen khiến
+  anh tưởng không có gì đang chạy; và yêu cầu màn hình tiến
+  trình trong PE phải giống màn hình mẫu của tool gốc (toàn
+  màn hình, có màu, không thể không nhìn thấy).
+- **Bản sửa 1 (console = bề mặt tiến trình CHÍNH — module
+  mới `progress.rs` trong crate winpe_install):**
+  1. `progress::ensure_console()` chạy đầu tiên trong
+     `main()`: engine là tiến trình console do qsu_start.cmd
+     chạy trực tiếp nên stdout vốn đã bám console của
+     launcher (đã kiểm chứng cơ chế: script chạy exe trực
+     tiếp, không `start`, không ẩn) — chỉ khi handle stdout
+     không hợp lệ mới `AttachConsole(ATTACH_PARENT_PROCESS)`,
+     bất đắc dĩ mới `AllocConsole` (mở cửa sổ thứ hai nên là
+     lựa chọn cuối). **qsu_start.cmd giữ nguyên từng byte** —
+     không cần thay đổi launcher.
+  2. Logger của engine nay mang sink: MỌI dòng log đồng thời
+     in thẳng ra console (`mirror_line`, có chốt dòng `\r`
+     đang mở), và dòng `LỖI...` gần nhất được giữ lại cho
+     trạng thái kết thúc. Mỗi giai đoạn in thêm một dòng
+     `>> <giai đoạn>` khi bắt đầu.
+  3. **Phần trăm bung ảnh trực tiếp:** DISM xả tiến độ bằng
+     ký tự `\r` không kèm `\n`, nên hàm mới
+     `cmd::run_streaming_progress()` (qsu_common) đọc pipe
+     theo từng khúc byte và cắt segment ở CẢ `\r` lẫn `\n` —
+     bộ đọc theo dòng cũ (`run_streaming` + `BufRead::lines`)
+     giữ toàn bộ % trong buffer tới khi DISM kết thúc.
+     Callback của engine trích % (`parse_dism_percent`), cập
+     nhật console tại chỗ bằng dòng `\r` "Đang bung ảnh:
+     <edition> — NN%" mỗi khi % đổi, đồng thời cập nhật màn
+     hình tiến trình; file log chỉ ghi mốc 10% để khỏi ngập.
+     `run_streaming` cũ giữ nguyên cho các caller khác
+     (mount/unmount/export của wizard, apply của module
+     CaiDatWinWinPE).
+- **Bản sửa 2 (màn hình tiến trình toàn màn hình = bề mặt
+  PHỤ):** cửa sổ WS_POPUP phủ kín màn hình, tự vẽ toàn bộ
+  bằng GDI (không phụ thuộc comctl32), mở TRƯỚC mọi công
+  việc — trước cả quét stage — trên luồng riêng chỉ đọc
+  trạng thái dùng chung; lỗi GUI bị nuốt trong luồng đó,
+  không chạm được vào luồng cài đặt hay dòng console. Thiết
+  kế theo màn hình mẫu do người dùng cung cấp (màn hình tiến
+  trình trong WinPE của tool gốc) nhưng thương hiệu riêng
+  của bản rebuild — KHÔNG dùng logo BH, KHÔNG tên tác giả
+  tool gốc: nền gradient xanh dương, tiêu đề lớn "CÀI ĐẶT
+  WINDOWS TỰ ĐỘNG", dòng cảnh báo "Hệ thống đang được cài
+  đặt tự động — Vui lòng KHÔNG tắt máy", credit nhỏ "Utility
+  Rebuild"; thẻ giữa chứa bước hiện tại, số % RẤT LỚN, thanh
+  tiến trình tự vẽ, và đồng hồ "Thời gian: mm:ss" chạy từng
+  giây (vẽ lại theo timer 200ms, chốt theo giây đã trôi) —
+  tín hiệu còn sống ngay cả khi DISM lâu không nhả % mới.
+  Quy ước %: ngoài bước bung ảnh là tiến độ tổng thể theo
+  giai đoạn (mốc 0/2/5/8/15 khởi đầu → 78 driver → 84
+  unattend → 88 WinRE → 93 bcdboot → 100 hoàn tất); trong
+  bước bung ảnh số % và thanh là % TRỰC TIẾP của DISM. Giao
+  diện màu toàn màn hình này CHỈ dành cho engine trong
+  WinPE theo yêu cầu riêng của người dùng — wizard phía
+  Windows giữ nguyên GUI sáng tiêu chuẩn.
+- **Bản sửa 3 (lỗi thì Ở LẠI trên màn hình):** toàn bộ
+  `std::process::exit(N)` trong luồng cài được đổi thành
+  `return N` về `main()` (luồng chạy trong `run()`; thứ tự
+  và logic từng bước không đổi một dòng). Mã khác 0 →
+  `main` chốt trạng thái ĐÃ DỪNG (bước đang dừng + lỗi gần
+  nhất + đường dẫn log) trên cả màn hình lẫn console rồi
+  NEO tiến trình bằng `thread::park()` vô hạn: qsu_start
+  không chạy tiếp tới `wpeutil reboot`, máy đứng nguyên
+  trong WinPE cho kỹ thuật viên đọc/chụp. Đường thành công
+  giữ nguyên: engine tự `wpeutil reboot` vào Windows mới.
+- **Tài liệu:** tab "Tài liệu" của wizard thêm mục 11 "Hiển
+  thị tiến trình trong WinPE"; `docs/co_che_v0.7.18.md` =
+  bản sao của co_che_v0.7.17.md + mục 11 (đã đối chiếu thân
+  tài liệu khớp từng chữ với TAI_LIEU_TEXT bằng script);
+  README_FULL §3.3 bổ sung đoạn hiển thị tiến trình + dòng
+  lịch sử v0.7.18; HUONG-DAN.txt có mục v0.7.18 + ca test
+  ưu tiên (lặp lại ca wipe trên DESKTOP-704R89L: từ lúc PE
+  lên phải có màn hình tiến trình suốt ca, % bung ảnh phải
+  leo trực tiếp, đồng hồ phải chạy từng giây; nếu dừng thì
+  chụp màn hình — nó ghi đúng bước đang dừng).
+- Gói: `~/workspace/UtilityRebuild-v0.7.18.zip` (10.065.338
+  byte, 16 entry, testzip sạch; drop_v0.7.18 = drop_v0.7.17
+  + engine `WinPEInstall.exe` build lại (1.742.119 byte,
+  md5 `50cfa224…`) + wizard `CaiDatWinTuDong.exe` build lại
+  (3.068.081 byte, md5 `4b575860…` — chỉ đổi nội dung tab
+  Tài liệu) + HUONG-DAN.txt cập nhật; 11 file còn lại
+  byte-identical với v0.7.17, đã đối chứng md5 từng file
+  trong zip khớp bản trong drop).
+  Build release sạch (0 lỗi, 0 cảnh báo). **Chưa test trên
+  máy thật** — ca test quyết định là ca ưu tiên trong
+  HUONG-DAN.
+
 ## Khác biệt có chủ đích so với bản gốc
 
 - Không cổng key bản quyền, không biến môi trường "token" khóa module.

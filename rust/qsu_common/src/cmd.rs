@@ -55,6 +55,86 @@ pub fn run_logged(log: &Arc<Logger>, program: &str, args: &[&str]) -> std::io::R
     Ok(out)
 }
 
+/// Như `run_streaming` nhưng cắt output theo CẢ `\r` lẫn `\n` và đọc theo
+/// từng khúc byte ngay khi tiến trình con xả ra pipe. Lý do (v0.7.18):
+/// thanh tiến độ của DISM /Apply-Image được ghi bằng ký tự `\r` (về đầu
+/// dòng) chứ KHÔNG kèm `\n` — bộ đọc theo dòng (`BufRead::lines`) chỉ
+/// nhả dữ liệu khi gặp `\n`, nên toàn bộ phần trăm bung ảnh bị giữ trong
+/// buffer tới khi DISM kết thúc mới tới được callback (thực địa
+/// winpe-20261117-1852.log: DISM chạy tới 82% nhưng không một dòng tiến
+/// độ nào tới được engine kịp lúc). Mỗi đoạn cắt ra (segment) được giải
+/// mã lossy như các hàm khác trong module này. stderr vẫn được thu ở
+/// luồng riêng và đẩy qua callback sau khi tiến trình kết thúc.
+pub fn run_streaming_progress<F: FnMut(&str)>(
+    program: &str,
+    args: &[&str],
+    mut on_segment: F,
+) -> std::io::Result<Option<i32>> {
+    use std::io::Read;
+    let mut child: Child = base_cmd(program)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stderr_handle = child.stderr.take().map(|err| {
+        std::thread::spawn(move || {
+            let reader = BufReader::new(err);
+            let mut collected = Vec::new();
+            for line in reader.lines() {
+                match line {
+                    Ok(l) => collected.push(l),
+                    Err(_) => break,
+                }
+            }
+            collected
+        })
+    });
+    if let Some(mut out) = child.stdout.take() {
+        let mut pending: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match out.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    pending.extend_from_slice(&chunk[..n]);
+                    // Nhả mọi segment đã đủ (kết thúc bằng \r hoặc \n;
+                    // cặp \r\n tính là MỘT dấu kết thúc).
+                    let mut start = 0usize;
+                    let mut i = 0usize;
+                    while i < pending.len() {
+                        if pending[i] == b'\r' || pending[i] == b'\n' {
+                            let seg = String::from_utf8_lossy(&pending[start..i]).into_owned();
+                            on_segment(&seg);
+                            if pending[i] == b'\r' && i + 1 < pending.len() && pending[i + 1] == b'\n' {
+                                i += 1;
+                            }
+                            i += 1;
+                            start = i;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    pending.drain(..start);
+                }
+                Err(_) => break,
+            }
+        }
+        if !pending.is_empty() {
+            let seg = String::from_utf8_lossy(&pending).into_owned();
+            on_segment(&seg);
+        }
+    }
+    let status = child.wait()?;
+    if let Some(h) = stderr_handle {
+        if let Ok(lines) = h.join() {
+            for l in lines {
+                on_segment(&l);
+            }
+        }
+    }
+    Ok(status.code())
+}
+
 /// Chạy lệnh dài (DISM apply-image, pnputil export...) và chuyển từng dòng
 /// output vào callback NGAY khi nó xuất hiện (phân tích tăng dần, cập nhật
 /// tiến độ giao diện). Trả mã thoát khi tiến trình kết thúc.

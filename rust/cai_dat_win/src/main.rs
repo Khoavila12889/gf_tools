@@ -3234,8 +3234,9 @@ NẾU WINPE KHÔNG LÊN ĐƯỢC
 /// tại (cơ chế staging/WinPE của v0.7.11 + chế độ phân vùng
 /// rebuild của v0.7.13 + đóng gói lại WinPE một ảnh của
 /// v0.7.15 + engine tự gán ký tự ổ cho phân vùng boot sau khi
-/// chia của v0.7.16 + mount ISO ba lớp của v0.7.17). Bản sao
-/// dạng markdown: docs/co_che_v0.7.17.md.
+/// chia của v0.7.16 + mount ISO ba lớp của v0.7.17 + hiển thị
+/// tiến trình hai bề mặt trong WinPE của v0.7.18). Bản sao
+/// dạng markdown: docs/co_che_v0.7.18.md.
 const TAI_LIEU_TEXT: &str = r#"TÀI LIỆU CƠ CHẾ — CÀI MỚI QUA WINPE (cơ chế của bản build hiện tại)
 
 Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài mới từ xa (qua WinPE)". Quá trình gồm hai giai đoạn: chuẩn bị (staging) chạy trong Windows hiện tại bằng wizard này, và cài thật chạy trong WinPE bằng engine WinPEInstall.exe.
@@ -3282,6 +3283,12 @@ Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài 
 
 10. LOG
 - Toàn bộ quá trình được ghi vào file install-<thời gian>.log trong thư mục QSU-Logs trên ổ Data, đồng thời hiện ở ô log của wizard. Các dòng bắt đầu bằng [Cơ chế] giải thích ngắn gọn công nghệ đang áp dụng tại bước đó.
+
+11. HIỂN THỊ TIẾN TRÌNH TRONG WINPE (từ v0.7.18)
+- Bối cảnh: ở các bản trước engine chỉ ghi tiến trình vào file log winpe-*.log trên ổ Data — màn hình WinPE không hiện gì (console của launcher trống, không có cửa sổ nào), khiến kỹ thuật viên tưởng máy treo và tắt nguồn giữa chừng trong khi DISM đã bung ảnh tới 82% (thực địa winpe-20261117-1852.log).
+- Từ v0.7.18 engine có HAI bề mặt tiến trình. Bề mặt CHÍNH là console của chính launcher qsu_start.cmd: engine thừa hưởng console đó nên mọi dòng log đồng thời in thẳng ra console, giai đoạn hiện tại in thành dòng riêng, và phần trăm bung ảnh cập nhật liên tục tại chỗ bằng dòng \r "Đang bung ảnh: <edition> — NN%". DISM xả tiến độ bằng ký tự \r (không phải \n) nên engine đọc output của DISM theo từng đoạn cắt ở cả \r lẫn \n để phần trăm tới được màn hình ngay khi DISM chạy, không đợi tới lúc xong.
+- Bề mặt PHỤ là màn hình tiến trình toàn màn hình tông xanh (thiết kế theo màn hình mẫu của tool gốc, thương hiệu của bản rebuild): tiêu đề "CÀI ĐẶT WINDOWS TỰ ĐỘNG", dòng cảnh báo không tắt máy, thẻ giữa hiện bước đang chạy + số % lớn + thanh tiến trình + đồng hồ thời gian đã trôi chạy từng giây (tín hiệu còn sống ngay cả khi DISM lâu không nhả % mới), kèm đường dẫn file log. Ngoài bước bung ảnh, số % là tiến độ tổng thể theo giai đoạn; trong bước bung ảnh, số % là phần trăm trực tiếp của DISM. Màn hình này mở trước mọi công việc và chạy trên luồng riêng — lỗi hiển thị (nếu có) không ảnh hưởng luồng cài đặt hay dòng console.
+- Khi có lỗi, engine KHÔNG thoát và KHÔNG reboot: nó neo lại trong WinPE, giữ nguyên bước đang dừng + nội dung lỗi + đường dẫn log trên cả console lẫn màn hình tiến trình để kỹ thuật viên đọc/chụp, rồi tắt máy bằng nút nguồn. Chỉ khi cài xong xuôi engine mới tự reboot vào Windows mới như trước.
 "#;
 
 // ---------------------------------------------------------------------------

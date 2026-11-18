@@ -452,6 +452,20 @@ Log riêng của từng module (nếu có) nằm **cạnh file .exe** của modu
   serial**; mọi bất định (không khớp serial, đĩa đích chứa ổ Data,
   không rõ đĩa Data) đều dừng với mã thoát riêng **trước khi ghi
   bất cứ thứ gì lên đĩa**.
+- **Hiển thị tiến trình (từ v0.7.18)**: hai bề mặt — console của
+  launcher `qsu_start.cmd` là bề mặt CHÍNH (mọi dòng log in thẳng
+  ra console qua sink của Logger; % bung ảnh cập nhật tại chỗ bằng
+  dòng `\r`, đọc từ DISM bằng `cmd::run_streaming_progress()` cắt
+  segment ở cả `\r`/`\n` vì tiến độ DISM kết thúc bằng `\r`), và
+  màn hình tiến trình toàn màn hình tông xanh tự vẽ bằng GDI là
+  bề mặt PHỤ (mở trước mọi công việc trên luồng riêng: tiêu đề +
+  cảnh báo không tắt máy + bước hiện tại + số % lớn + thanh tiến
+  trình + đồng hồ thời gian đã trôi chạy từng giây + đường dẫn
+  log; thiết kế theo màn hình mẫu của tool gốc, thương hiệu của
+  bản rebuild). Khi lỗi, engine neo lại trong WinPE giữ bước đang
+  dừng + lỗi + đường dẫn log trên cả hai bề mặt thay vì thoát cho
+  launcher reboot (mã thoát nay được `run()` trả về `main()` chốt
+  trạng thái cuối; logic cài đặt không đổi).
 - **Checklist kiểm thử**: xem mục 6 (nhóm B, C).
 - **Trạng thái kiểm thử thực tế**: **chưa kiểm chứng trên máy thật**
   — WinPE do chính công cụ staging chưa từng boot thành công tới
@@ -1561,6 +1575,7 @@ Mỗi phiên bản một dòng, theo `BUILD_NOTES.md` và các gói phát hành
 | v0.7.15 | 2026-11-18 | **Đóng gói lại WinPE thành WIM một ảnh bootable** trong wizard (`repack_winpe_single_image()`, mốc 69%): sau khi inject, xuất riêng index đã inject bằng `/Export-Image /Bootable /Compress:Max` rồi thay `winpe.wim` — sửa ca thực địa 2026-11-17 winload nạp nhầm ảnh Windows Setup vì WIM hai-ảnh không có Boot Index chỉ định ảnh PE. Không khôi phục cổng kiểm chứng DISM-text đã gỡ ở v0.7.11. |
 | v0.7.16 | 2026-11-18 | **Engine tự gán ký tự ổ cho phân vùng boot sau khi chia** (`disk::ensure_boot_letter()` trong `qsu_common`, dùng chung cho `execute_wipe()` và `execute_rebuild()`): sửa ca thực địa `winpe-20261117-1811.log` — bản repack v0.7.15 đã đưa được engine lên, diskpart wipe báo thành công mọi bước kể cả `assign letter=S`, nhưng liệt kê sau wipe thấy phân vùng EFI không có ký tự ổ và bước xác minh cũ huỷ toàn bộ ca cài ngay sau bước phá huỷ. Nay phân vùng boot thiếu ký tự thì engine tự gán (ưu tiên `S:`, diskpart phụ / `SetVolumeMountPointW`, thử lại 1 lần) và chốt bằng probe truy cập thật đường dẫn gốc; chỉ dừng khi phân vùng vắng mặt hẳn hoặc gán + probe đều thất bại. |
 | v0.7.17 | 2026-11-18 | **Mount ISO ba lớp trong wizard** + **UX xác nhận serial**: sửa ca thực địa trên máy Windows lite — "Đọc ISO" với ISO gốc báo "Mount-DiskImage không trả ký tự ổ đĩa (output: )" rỗng vì đường mount cũ chỉ dựa vào một lệnh PowerShell và lỗi cmdlet bị nuốt. Nay `mount_iso()` dùng lại mount có sẵn → PowerShell với lỗi ép terminating và hiện nguyên văn → dự phòng VirtDisk API gốc (ký tự ổ dò bằng hiệu tập volume); `dismount_iso()` gỡ đối xứng theo sổ đăng ký mount. Vùng xác nhận serial (cả wipeDisk/rebuild): thêm dòng định danh đĩa đích đầy đủ ngay trên ô nhập + nhãn phản hồi khớp/chưa khớp trực tiếp theo từng ký tự (cùng `normalize_disk_serial` như chốt chặn lúc bấm TIẾN HÀNH) + danh sách đĩa xổ xuống rộng 780px để không cắt serial. Chỉ wizard thay đổi; engine giữ nguyên. |
+| v0.7.18 | 2026-11-18 | **Hiển thị tiến trình trong WinPE**: sửa ca thực địa `winpe-20261117-1852.log` — engine chạy khoẻ (ensure_boot_letter tự gán T:, DISM bung ảnh tới 82%) nhưng bị tưởng là treo và bị tắt nguồn vì không có bề mặt hiển thị nào: cửa sổ không xuất hiện trong PE của ISO mod, console launcher trống vì engine chỉ ghi file log. Nay engine có hai bề mặt: (1) console của `qsu_start.cmd` là bề mặt CHÍNH — Logger gắn sink in mọi dòng log thẳng ra console, giai đoạn in dòng riêng, % bung ảnh cập nhật tại chỗ bằng dòng `\r` nhờ `cmd::run_streaming_progress()` mới (cắt output DISM ở cả `\r`/`\n`); `qsu_start.cmd` không đổi. (2) Màn hình tiến trình toàn màn hình tông xanh tự vẽ bằng GDI (theo màn hình mẫu của tool gốc, thương hiệu bản rebuild) là bề mặt PHỤ — mở trước mọi công việc trên luồng riêng, gồm bước hiện tại + số % lớn + thanh tiến trình + đồng hồ `mm:ss` chạy từng giây + đường dẫn log; % ngoài bước bung ảnh là tiến độ tổng thể theo giai đoạn, trong bước bung ảnh là % trực tiếp của DISM. Khi lỗi engine neo lại trong WinPE giữ lỗi trên cả hai bề mặt (mã thoát chuyển thành giá trị trả về của `run()`, logic cài đặt không đổi). Wizard chỉ đổi nội dung tab Tài liệu (mục 11 mới). |
 
 ---
 

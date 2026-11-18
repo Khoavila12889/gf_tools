@@ -10,3 +10,22 @@ path = "src/main.rs"
 
 [dependencies]
 qsu_common = { path = "../qsu_common" }
+# Win32 trực tiếp cho màn hình tiến trình toàn màn hình + console
+# (v0.7.18, xem src/progress.rs) — không thêm crate GUI nào để giữ
+# engine nhỏ gọn cho môi trường WinPE tối thiểu.
+winapi = { version = "0.3", features = [
+    "consoleapi",
+    "errhandlingapi",
+    "handleapi",
+    "libloaderapi",
+    "minwinbase",
+    "minwindef",
+    "processenv",
+    "processthreadsapi",
+    "winbase",
+    "wincon",
+    "windef",
+    "wingdi",
+    "winnt",
+    "winuser",
+] }

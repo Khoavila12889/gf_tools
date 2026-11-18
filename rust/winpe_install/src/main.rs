@@ -22,10 +22,19 @@
 //!   dừng cứng với exit code 13, không đụng vào đĩa.
 //! - Mọi bước ghi log ra ổ Data; lỗi ở bất kỳ bước nào cũng dừng lại,
 //!   KHÔNG reboot vào trạng thái dở dang (trừ khi đã bcdboot xong).
+//! - Hiển thị tiến trình (v0.7.18, xem `progress.rs`): console của
+//!   launcher là bề mặt chính (mọi dòng log in thẳng ra console,
+//!   phần trăm DISM cập nhật tại chỗ bằng `\r`), cộng thêm màn
+//!   hình tiến trình toàn màn hình tông xanh mở trước mọi công
+//!   việc. Khi lỗi, engine NEO LẠI trong WinPE với lỗi trên cả
+//!   hai bề mặt thay vì thoát để launcher reboot lặng lẽ.
+
+mod progress;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use progress::ProgressUi;
 use qsu_common::cmd;
 use qsu_common::disk;
 use qsu_common::log::Logger;
@@ -135,21 +144,107 @@ fn find_efi_letter(drives: &[DriveInfo]) -> Option<char> {
     None
 }
 
+/// Trích phần trăm từ một segment output của DISM (dạng
+/// "[==== 82.0% ====]" hoặc "82.0%") — None nếu segment không mang
+/// phần trăm hợp lệ 0..=100.
+fn parse_dism_percent(seg: &str) -> Option<u32> {
+    let pct_pos = seg.rfind('%')?;
+    let before = &seg[..pct_pos];
+    let mut num: Vec<char> = Vec::new();
+    for c in before.chars().rev() {
+        if c.is_ascii_digit() || c == '.' {
+            num.push(c);
+        } else if !num.is_empty() {
+            break;
+        }
+    }
+    if num.is_empty() {
+        return None;
+    }
+    let num: String = num.into_iter().rev().collect();
+    let v: f32 = num.parse().ok()?;
+    if (0.0..=100.0).contains(&v) {
+        Some(v as u32)
+    } else {
+        None
+    }
+}
+
 fn main() {
+    // CONSOLE LÀ BỀ MẶT TIẾN TRÌNH CHÍNH (v0.7.18): engine được
+    // qsu_start.cmd chạy thẳng trong console của launcher — bảo
+    // đảm stdout bám đúng console đó trước khi in bất cứ chữ nào.
+    progress::ensure_console();
+    // Màn hình tiến trình toàn màn hình mở TRƯỚC mọi công việc (kể
+    // cả trước khi quét stage) để màn hình không bao giờ trống;
+    // đây là bề mặt phụ — mọi lỗi GUI đều bị nuốt trong luồng giao
+    // diện, không ảnh hưởng luồng cài đặt hay dòng console.
+    let ui = ProgressUi::start();
+    ui.set_phase("Đang khởi động engine cài đặt", 0);
+    progress::mirror_line("=== QSU WinPEInstall v0.7.18 — engine cài đặt trong WinPE ===");
+    let code = run(&ui);
+    if code == 0 {
+        std::process::exit(0);
+    }
+    // LỖI: giữ nguyên trạng thái cuối trên CẢ màn hình lẫn console
+    // và KHÔNG thoát — tiến trình neo lại tại đây nên qsu_start.cmd
+    // không chạy tiếp tới `wpeutil reboot`; máy đứng nguyên trong
+    // WinPE với lỗi hiển thị cho kỹ thuật viên đọc/chụp, thay vì
+    // reboot lặng lẽ như các bản trước.
+    ui.mark_failed();
+    progress::mirror_line("============================================================");
+    progress::mirror_line(&format!("ĐÃ DỪNG tại bước: {}", ui.phase_text()));
+    if let Some(err) = ui.error_text() {
+        progress::mirror_line(&format!("Lỗi: {}", err));
+    }
+    if let Some(p) = ui.log_path_text() {
+        progress::mirror_line(&format!("Nhật ký chi tiết: {}", p));
+    }
+    progress::mirror_line("Máy KHÔNG tự khởi động lại. Đọc lỗi ở trên rồi tắt máy bằng nút nguồn.");
+    loop {
+        std::thread::park();
+    }
+}
+
+/// Toàn bộ luồng cài đặt cũ, trả mã thoát thay vì gọi
+/// `std::process::exit` tại chỗ — để `main` chốt trạng thái hiển
+/// thị cuối khi lỗi. Thứ tự/bước đi không đổi so với trước.
+fn run(ui: &ProgressUi) -> i32 {
     let staging_name = std::env::args().nth(1).unwrap_or_else(|| "QSU-Stage".to_string());
 
+    ui.set_phase("Đang quét đĩa & đọc thông tin cài đặt", 2);
     // Tìm staging trước khi có log (log nằm trên ổ Data)
     let (data_letter, stage_dir, cfg) = match find_stage(&staging_name) {
         Some(v) => v,
         None => {
-            eprintln!("QSU WinPEInstall: không tìm thấy stage.json trên ổ Data có marker. Dừng.");
-            std::process::exit(2);
+            let msg = "Không tìm thấy stage.json trên ổ Data có marker .qsu_data_drive — wizard chưa staging hoặc ổ Data không gắn. Dừng.";
+            ui.note_error(msg);
+            progress::mirror_line(&format!("LỖI: {}", msg));
+            eprintln!("QSU WinPEInstall: {}", msg);
+            return 2;
         }
     };
     let data_root = format!("{}:\\", data_letter);
     let logs_dir = Path::new(&data_root).join(&cfg.logs_folder);
     let log_path = logs_dir.join(format!("winpe-{}.log", qsu_common::log::log_stamp()));
-    let log = Arc::new(Logger::new(log_path, None));
+    ui.set_log_path(&log_path.to_string_lossy());
+    // Gương console + bắt lỗi cho màn hình tiến trình (v0.7.18):
+    // MỌI dòng log đồng thời in thẳng ra console của launcher (bề
+    // mặt tiến trình chính — trước đây engine chỉ ghi file nên
+    // console trống trơn dù engine đang chạy khoẻ), và dòng
+    // "LỖI..." gần nhất được giữ lại để trạng thái kết thúc hiển
+    // thị đúng lỗi đã dừng ca cài.
+    let ui_sink = ui.clone();
+    let log = Arc::new(Logger::new(
+        log_path,
+        Some(Box::new(move |full: &str| {
+            progress::mirror_line(full);
+            let msg = full.splitn(2, "] ").nth(1).unwrap_or(full);
+            if msg.starts_with("LỖI") {
+                ui_sink.note_error(msg);
+            }
+        })),
+    ));
     log.line("=== WinPEInstall bắt đầu ===");
     log.line(&format!("Ổ Data: {} (serial stage ghi: {})", data_letter, cfg.data_volume_serial));
     log.line(&format!(
@@ -166,7 +261,7 @@ fn main() {
                 "LỖI AN TOÀN: serial ổ Data thực tế {} != stage {}. Dừng.",
                 actual, cfg.data_volume_serial
             ));
-            std::process::exit(3);
+            return 3;
         }
     }
 
@@ -195,7 +290,7 @@ fn main() {
         // WIPE: đích là cả đĩa vật lý — nhận diện bằng serial phần cứng
         if cfg.target_disk_serial.trim().is_empty() {
             log.line("LỖI AN TOÀN: stage.json chọn wipeDisk nhưng thiếu targetDiskSerial. Dừng.");
-            std::process::exit(10);
+            return 10;
         }
         let disks = disk::list_physical_disks();
         let target = match disk::find_disk_by_serial(&disks, &cfg.target_disk_serial) {
@@ -205,7 +300,7 @@ fn main() {
                     "LỖI AN TOÀN: không tìm thấy (hoặc trùng) đĩa vật lý có serial '{}' như stage.json. Dừng, không đụng đĩa nào.",
                     cfg.target_disk_serial
                 ));
-                std::process::exit(10);
+                return 10;
             }
         };
         // Chốt an toàn tuyệt đối: đĩa đích KHÔNG được chứa ổ Data
@@ -217,12 +312,12 @@ fn main() {
                     "LỖI AN TOÀN: đĩa đích wipe (đĩa {}) CHỨA chính ổ Data {}:. Từ chối wipe.",
                     target.number, data_letter
                 ));
-                std::process::exit(11);
+                return 11;
             }
             Some(_) => {}
             None => {
                 log.line("LỖI AN TOÀN: không xác định được ổ Data nằm trên đĩa vật lý nào — không thể chứng minh đĩa đích an toàn. Dừng.");
-                std::process::exit(11);
+                return 11;
             }
         }
         log.line(&format!("Đĩa đích wipe: {}", target.summary()));
@@ -230,6 +325,7 @@ fn main() {
             "Các phân vùng trên đĩa đích sắp bị XOÁ TOÀN BỘ:\n{}",
             target.describe_partitions()
         ));
+        ui.set_phase("Đang xoá và chia lại phân vùng", 5);
         match disk::execute_wipe(&log, target.number, &target.serial, target.size, uefi) {
             Ok(r) => {
                 layout_boot_letter = Some(r.boot_letter);
@@ -238,7 +334,7 @@ fn main() {
             }
             Err(e) => {
                 log.line(&format!("LỖI: wipe đĩa đích thất bại: {}. Dừng.", e));
-                std::process::exit(12);
+                return 12;
             }
         }
     } else if rebuild_mode {
@@ -252,11 +348,11 @@ fn main() {
         // hoặc execute_rebuild tự dừng trước diskpart).
         if cfg.target_disk_serial.trim().is_empty() {
             log.line("LỖI AN TOÀN: stage.json chọn rebuild nhưng thiếu targetDiskSerial. Dừng (exit 13).");
-            std::process::exit(13);
+            return 13;
         }
         if cfg.rebuild_partitions.is_empty() {
             log.line("LỖI AN TOÀN: stage.json chọn rebuild nhưng rebuildPartitions rỗng — không có căn cứ nào để xoá. Dừng (exit 13).");
-            std::process::exit(13);
+            return 13;
         }
         let disks = disk::list_physical_disks();
         let target = match disk::find_disk_by_serial(&disks, &cfg.target_disk_serial) {
@@ -266,7 +362,7 @@ fn main() {
                     "LỖI AN TOÀN: không tìm thấy (hoặc trùng) đĩa vật lý có serial '{}' như stage.json. Dừng, không đụng đĩa nào (exit 13).",
                     cfg.target_disk_serial
                 ));
-                std::process::exit(13);
+                return 13;
             }
         };
         // Extent của volume Data: nếu nó nằm trên CHÍNH đĩa đích thì
@@ -285,7 +381,7 @@ fn main() {
                     }
                     None => {
                         log.line("LỖI AN TOÀN: ổ Data nằm trên đĩa đích nhưng không đọc được extent của nó — không chứng minh được an toàn. Dừng (exit 13).");
-                        std::process::exit(13);
+                        return 13;
                     }
                 }
             }
@@ -298,7 +394,7 @@ fn main() {
             }
             None => {
                 log.line("LỖI AN TOÀN: không xác định được ổ Data nằm trên đĩa vật lý nào. Dừng (exit 13).");
-                std::process::exit(13);
+                return 13;
             }
         };
         log.line(&format!("Đĩa đích rebuild: {}", target.summary()));
@@ -325,6 +421,7 @@ fn main() {
                 .collect::<Vec<_>>()
                 .join("\n")
         ));
+        ui.set_phase("Đang xoá và chia lại phân vùng hệ thống", 5);
         match disk::execute_rebuild(
             &log,
             target.number,
@@ -343,7 +440,7 @@ fn main() {
                     "LỖI: rebuild đĩa đích bị chặn: {}. Dừng (exit 13) — nếu lỗi xảy ra ở bước đối chiếu/kiểm tra thì đĩa chưa bị đụng vào; xem chi tiết phía trên.",
                     e
                 ));
-                std::process::exit(13);
+                return 13;
             }
         }
     } else {
@@ -351,7 +448,7 @@ fn main() {
             Some(l) => l,
             None => {
                 log.line("LỖI: không xác định được phân vùng OS theo serial trong stage.json. Dừng, không format gì.");
-                std::process::exit(4);
+                return 4;
             }
         }
     };
@@ -359,26 +456,31 @@ fn main() {
         || Path::new(&format!("{}:\\{}", os_letter, DATA_MARKER)).exists()
     {
         log.line("LỖI AN TOÀN: đích cài trùng ổ Data. Dừng.");
-        std::process::exit(5);
+        return 5;
     }
     let os_root = format!("{}:\\", os_letter);
     log.line(&format!("Ổ OS đích: {}", os_letter));
+    ui.set_detail(&format!(
+        "Đích cài: ổ {}: — ảnh {} ({})",
+        os_letter, cfg.image_file, cfg.image_name
+    ));
 
     // --- Kiểm tra image ---
     let image_path = stage_dir.join(&cfg.image_file);
     if !image_path.exists() {
         log.line(&format!("LỖI: không thấy file image {}", image_path.display()));
-        std::process::exit(6);
+        return 6;
     }
 
     // --- Format phân vùng OS (wipeDisk/rebuild đã format khi chia lại) ---
     if wipe_mode || rebuild_mode {
         log.line("Chế độ chia lại phân vùng: phân vùng Windows đã được format trong script diskpart — bỏ qua bước format riêng.");
     } else {
+        ui.set_phase("Đang format phân vùng hệ điều hành", 8);
         log.line("Đang format phân vùng OS (NTFS, quick)...");
         if !format_os_partition(&log, os_letter) {
             log.line("LỖI: format thất bại. Dừng.");
-            std::process::exit(7);
+            return 7;
         }
     }
 
@@ -403,25 +505,56 @@ fn main() {
         args.push(&swm_arg);
     }
     log.line(&format!("$ {} {}", dism, args.join(" ")));
+    ui.set_phase(
+        &format!("Đang bung ảnh: {}", cfg.image_name),
+        progress::APPLY_BASE_PCT,
+    );
     let mut last_pct = String::new();
-    let apply_res = cmd::run_streaming(&dism, &args, |line| {
-        let t = line.trim();
-        if t.contains('%') {
-            last_pct = t.to_string();
+    let mut last_shown_pct: i32 = -1;
+    let mut last_logged_pct: i32 = -1;
+    // run_streaming_progress cắt output theo cả \r — bắt buộc với
+    // DISM vì thanh tiến độ của nó kết thúc bằng \r chứ không phải
+    // \n; bộ đọc theo dòng cũ giữ mọi phần trăm trong buffer tới
+    // khi DISM xong mới nhả (v0.7.18).
+    let apply_res = cmd::run_streaming_progress(&dism, &args, |seg| {
+        let t = seg.trim();
+        if t.is_empty() {
+            return;
         }
-        if !t.is_empty() {
-            log.line(&format!("  | {}", t));
+        match parse_dism_percent(t) {
+            Some(p) => {
+                last_pct = t.to_string();
+                let pi = p as i32;
+                if pi != last_shown_pct {
+                    last_shown_pct = pi;
+                    ui.set_apply_progress(p, &cfg.image_name);
+                    progress::mirror_progress(&format!(
+                        "Đang bung ảnh: {} — {}%",
+                        cfg.image_name, pi
+                    ));
+                }
+                // File log chỉ ghi mốc 10% để khỏi ngập (console và
+                // màn hình vẫn nhận mọi phần trăm qua mirror ở trên).
+                if pi >= last_logged_pct + 10 || pi == 100 {
+                    last_logged_pct = pi;
+                    log.line(&format!("  | {}", t));
+                }
+            }
+            None => {
+                log.line(&format!("  | {}", t));
+            }
         }
     });
     match apply_res {
         Ok(Some(0)) => log.line("Apply-Image hoàn tất."),
         other => {
             log.line(&format!("LỖI: Apply-Image thất bại ({:?}), tiến độ cuối: {}", other, last_pct));
-            std::process::exit(8);
+            return 8;
         }
     }
 
     // --- Inject driver offline (IRST/NVMe...) nếu staging có ---
+    ui.set_phase("Đang cài driver", 78);
     let drivers_dir = stage_dir.join("Drivers");
     if drivers_dir.exists()
         && std::fs::read_dir(&drivers_dir).map(|mut d| d.next().is_some()).unwrap_or(false)
@@ -468,6 +601,7 @@ fn main() {
     }
 
     // --- Unattend + agent hậu cài vào bản Windows mới ---
+    ui.set_phase("Đang chuẩn bị cấu hình khởi động đầu tiên", 84);
     let panther = Path::new(&os_root).join("Windows").join("Panther");
     let _ = std::fs::create_dir_all(&panther);
     let unattend_src = stage_dir.join("autounattend.xml");
@@ -555,6 +689,7 @@ fn main() {
     if wipe_mode || rebuild_mode {
         match layout_recovery_letter {
             Some(r) => {
+                ui.set_phase("Đang chép WinRE", 88);
                 disk::copy_winre(&log, os_letter, r);
             }
             None => log.line(
@@ -564,6 +699,7 @@ fn main() {
     }
 
     // --- bcdboot ---
+    ui.set_phase("Đang gắn thông tin khởi động", 93);
     let bcdboot = Path::new(&os_root).join("Windows").join("System32").join("bcdboot.exe");
     let bcdboot_s = if bcdboot.exists() {
         bcdboot.to_string_lossy().into_owned()
@@ -601,12 +737,15 @@ fn main() {
     };
     if !boot_ok {
         log.line("LỖI: bcdboot thất bại. KHÔNG reboot — cần kỹ thuật viên kiểm tra.");
-        std::process::exit(9);
+        return 9;
     }
 
+    ui.set_phase("Hoàn tất — sắp khởi động lại", 100);
+    ui.mark_complete();
     log.line("=== WinPEInstall hoàn tất — reboot vào Windows mới ===");
     if cmd::run_capture("wpeutil", &["reboot"]).is_err() {
         // Dự phòng chỉ khi wpeutil không chạy được
         let _ = cmd::run_capture("shutdown", &["/r", "/t", "10"]);
     }
+    0
 }
