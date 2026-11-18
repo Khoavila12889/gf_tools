@@ -592,11 +592,27 @@ fn run(ui: &ProgressUi) -> i32 {
     // --- Unattend + agent hậu cài vào bản Windows mới ---
     ui.set_phase("Đang chuẩn bị cấu hình khởi động đầu tiên", 84);
     let panther = Path::new(&os_root).join("Windows").join("Panther");
-    let _ = std::fs::create_dir_all(&panther);
+    if let Err(e) = std::fs::create_dir_all(&panther) {
+        log.line(&format!("LỖI: Không tạo được thư mục Panther: {}", e));
+        return 12;
+    }
     let unattend_src = stage_dir.join("autounattend.xml");
     if unattend_src.exists() {
         for name in ["autounattend.xml", "unattend.xml"] {
-            let _ = std::fs::copy(&unattend_src, panther.join(name));
+            if let Err(e) = std::fs::copy(&unattend_src, panther.join(name)) {
+                log.line(&format!("LỖI: Không chép được cấu hình đăng nhập tự động: {}", e));
+                return 12;
+            }
+        }
+        if let Err(e) = qsu_common::post_install::write_to_windows(Path::new(&os_root)) {
+            log.line(&format!("LỖI: Không chuẩn bị được tự cài ứng dụng: {}", e));
+            return 12;
+        }
+        log.line("Đã chuẩn bị tự cài UltraViewer, Chrome và 7-Zip sau đăng nhập.");
+        let notify_dir = Path::new(&os_root).join("ProgramData").join("QSU");
+        if let Err(e) = qsu_common::post_install::copy_telegram_config(&stage_dir, &notify_dir) {
+            log.line(&format!("LỖI: Không chép được cấu hình Telegram: {}", e));
+            return 12;
         }
         log.line("Đã copy autounattend.xml vào Windows\\Panther.");
     }

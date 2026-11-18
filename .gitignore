@@ -3,3 +3,4 @@ rust/target/
 # Packaged drops (built binaries) and zips
 drop_v*/
 *.zip
+**/Telegram.json

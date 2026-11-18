@@ -680,6 +680,12 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
       </AutoLogon>
       <FirstLogonCommands>
 {flc}
+        <SynchronousCommand wcm:action="add">
+          <Order>3</Order>
+          <CommandLine>{post_command}</CommandLine>
+          <Description>Tự cài UltraViewer, Chrome và 7-Zip sau khi vào Windows mới</Description>
+          <RequiresUserInput>false</RequiresUserInput>
+        </SynchronousCommand>
       </FirstLogonCommands>
     </component>
   </settings>
@@ -692,6 +698,7 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
         comp = comp,
         user = user,
         flc = fl_commands,
+        post_command = xml_escape(qsu_common::post_install::FIRST_LOGON_COMMAND),
     )
 }
 
@@ -1272,6 +1279,16 @@ fn spawn_install(shared: SharedRef, sender: nwg::NoticeSender, plan: InstallPlan
 
         // --- Bước 4: autounattend vào Windows\Panther ---
         if let Some(xml) = &plan.unattend_xml {
+            if let Err(e) = qsu_common::post_install::write_to_windows(Path::new(&target_root)) {
+                done(&shared, &sender, fail("Chuẩn bị tự cài ứng dụng", e.to_string()));
+                return;
+            }
+            log.line("Đã chuẩn bị tự cài UltraViewer, Chrome và 7-Zip ở lần đăng nhập đầu.");
+            let notify_dir = Path::new(&target_root).join("ProgramData").join("QSU");
+            if let Err(e) = qsu_common::post_install::copy_host_telegram_config(&notify_dir) {
+                done(&shared, &sender, fail("Cấu hình Telegram", e.to_string()));
+                return;
+            }
             set_progress(&shared, &sender, 90, "Đang ghi autounattend.xml...");
             let panther = Path::new(&target_root).join("Windows").join("Panther");
             let write_res = std::fs::create_dir_all(&panther).and_then(|_| {
@@ -1650,7 +1667,7 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
     let btn_browse_driver = add_button!("Duyệt...", (742, 580), (150, 32));
     let mut chk_unattend = Default::default();
     nwg::CheckBox::builder()
-        .text("Tạo autounattend.xml: bỏ qua OOBE, tạo tài khoản admin, AutoLogon lần đầu (ngôn ngữ vi-VN)")
+        .text("Tự thiết lập Windows: tài khoản admin, AutoLogon; tự cài UltraViewer, Chrome, 7-Zip (cần mạng)")
         .font(Some(f_normal))
         .parent(&window)
         .check_state(nwg::CheckBoxState::Checked)
@@ -2644,6 +2661,9 @@ fn confirm_install(plan: &InstallPlan) -> bool {
     } else {
         String::new()
     };
+    let account_line = if plan.unattend_xml.is_some() {
+        format!("{}• Tự cài UltraViewer, Chrome, 7-Zip sau đăng nhập (cần Internet).\n", account_line)
+    } else { account_line };
     if let Some(w) = &plan.wipe {
         let text = format!(
             "Chuẩn bị cài Windows — CHẾ ĐỘ XOÁ TOÀN BỘ Ổ ĐĨA:\n\n\
@@ -2768,6 +2788,11 @@ fn do_prepare(app: &Rc<App>) {
                     .to_string(),
             );
         }
+    }
+    match qsu_common::post_install::copy_host_telegram_config(&dest_root) {
+        Ok(true) => results.push("• Đã chép cấu hình Telegram riêng, giới hạn quyền SYSTEM/Administrators.".to_string()),
+        Ok(false) => {},
+        Err(e) => results.push(format!("• LỖI chuẩn bị cấu hình Telegram: {}", e)),
     }
     let text = results.join("\n");
     app.lbl_prep_result.set_text(&text);

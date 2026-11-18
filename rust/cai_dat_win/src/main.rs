@@ -1696,6 +1696,12 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
       </AutoLogon>
       <FirstLogonCommands>
 {flc}
+        <SynchronousCommand wcm:action="add">
+          <Order>3</Order>
+          <CommandLine>{post_command}</CommandLine>
+          <Description>Tự cài UltraViewer, Chrome và 7-Zip sau khi vào Windows mới</Description>
+          <RequiresUserInput>false</RequiresUserInput>
+        </SynchronousCommand>
       </FirstLogonCommands>
     </component>
   </settings>
@@ -1708,6 +1714,7 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
         comp = comp,
         user = user,
         flc = fl_commands,
+        post_command = xml_escape(qsu_common::post_install::FIRST_LOGON_COMMAND),
     )
 }
 
@@ -2844,6 +2851,10 @@ fn exec_clean(
         }
     }
 
+    if let Err(e) = qsu_common::post_install::copy_host_telegram_config(&stage_dir) {
+        fail(format!("Không chuẩn bị được cấu hình thông báo Telegram: {}", e));
+        return;
+    }
     // [Cơ chế] (v0.7.12 — dòng thuyết minh công nghệ trong log,
     // thuần chuỗi log, không đổi hành vi): staging trên ổ Data.
     log.line("[Cơ chế] Staging trên ổ Data: toàn bộ ca cài được chuẩn bị vào thư mục QSU-Stage trên ổ Data (bộ nguồn, WinPE, driver, stage.json); ổ Data đã được đánh dấu bằng file .qsu_data_drive và stage.json ghi lại toàn bộ kế hoạch — vào WinPE, engine tìm lại ổ Data bằng marker + đối chiếu serial trong stage.json, không dựa vào ký tự ổ (ký tự ổ trong WinPE khác hẳn trong Windows).");
@@ -6378,6 +6389,9 @@ fn on_start_inner(app: &Rc<App>) {
             }
         )
     };
+    let summary = if plan.mode_clean {
+        format!("{}\n\nSau đăng nhập Windows mới: tự cài UltraViewer, Chrome và 7-Zip (cần Internet).", summary)
+    } else { summary };
     if !confirm_box("Xác nhận cài đặt", &summary) {
         return;
     }

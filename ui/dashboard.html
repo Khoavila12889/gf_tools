@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Utility Rebuild — bảng công cụ hỗ trợ kỹ thuật Windows.">
+  <title>Utility Rebuild · Công cụ Windows</title>
+  <!-- Tailwind is optional at runtime: the complete local styles below also work offline. -->
+  <script defer src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style>
+    :root{font-family:Inter,"Segoe UI",Roboto,Arial,sans-serif;color:#172339;background:#f8f9fa;font-synthesis:none;--blue:#2563eb;--muted:#66758a;--line:#e3e8ef}
+    *{box-sizing:border-box}body{margin:0}button,input{font:inherit}button{cursor:pointer}button,input{touch-action:manipulation}button:focus-visible,input:focus-visible,a:focus-visible{outline:3px solid #93b6ff;outline-offset:4px}button{color:inherit}svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}button{border:0}button:disabled{cursor:default}::selection{background:#dbeafe}
+    .topbar{height:72px;border-bottom:1px solid var(--line);background:#ffffffdd;display:flex;align-items:center;justify-content:space-between;padding:0 max(28px,calc((100vw - 1120px)/2));gap:20px}.brand{display:flex;gap:11px;align-items:center;font-size:15px;font-weight:700;letter-spacing:-.3px}.brand-icon{width:34px;height:34px;border-radius:10px;background:var(--blue);color:white;display:grid;place-items:center;box-shadow:0 3px 8px #2563eb22}.brand-icon svg{width:20px;height:20px}.top-meta{display:flex;gap:14px;align-items:center;color:var(--muted);font-size:12px}.version{padding:5px 9px;background:#f1f4f8;border:1px solid var(--line);border-radius:6px;font-variant-numeric:tabular-nums}
+    main{max-width:1120px;margin:auto;padding:48px 28px 24px}.eyebrow{display:flex;gap:7px;align-items:center;color:#61738d;font-size:11px;font-weight:700;letter-spacing:1.7px;text-transform:uppercase;margin-bottom:14px}.eyebrow svg{width:14px;height:14px}h1{font-size:34px;letter-spacing:-1.3px;line-height:1.2;margin:0 0 10px;font-weight:750}.subtitle{font-size:15px;color:var(--muted);margin:0;line-height:1.6}.heading-row{display:flex;justify-content:space-between;align-items:center;gap:20px}.summary-badge{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:white;border-radius:8px;padding:10px 13px;font-size:12px;color:#52637b;white-space:nowrap}.summary-badge svg{width:16px;height:16px;color:#3a77dd}.summary-badge strong{color:#233d5f}
+    .controls{margin-top:30px}.search-row{display:flex;gap:10px}.search-wrap{position:relative;flex:1}.search-wrap>svg{position:absolute;left:16px;top:15px;color:#8793a5;pointer-events:none}.search-wrap input{width:100%;height:50px;background:white;border:1px solid #dbe2eb;border-radius:10px;padding:0 70px 0 47px;box-shadow:0 2px 4px #12274503;color:#172339;font-size:14px;transition:border .15s,box-shadow .15s}.search-wrap input:focus{outline:0;border-color:#8caef1;box-shadow:0 0 0 3px #2563eb10}.search-wrap input::placeholder{color:#8995a6}.key{position:absolute;right:14px;top:15px;border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:#8a97a9;background:#fafbfd;font-size:10px;line-height:17px}.clear{padding:0 18px;background:white;border:1px solid #dbe2eb;border-radius:10px;font-size:13px;font-weight:550;display:flex;align-items:center;gap:8px;white-space:nowrap}.clear svg{width:16px;height:16px}.clear:hover{background:#f0f4fa}.clear:disabled{color:#99a4b3;background:#f8f9fb}.tabs{display:flex;flex-wrap:wrap;gap:7px;margin-top:22px}.tab{border:1px solid transparent;background:transparent;border-radius:999px;padding:10px 17px;font-size:13px;font-weight:550;color:#65728a;transition:background .15s,color .15s}.tab:hover{background:#eaf0f8;color:#254a85}.tab[aria-pressed=true]{background:var(--blue);color:white;box-shadow:0 2px 5px #2563eb24}
+    .section-head{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:32px 0 17px}.section-title{font-size:14px;font-weight:650;display:flex;gap:10px;align-items:center}.count{border:1px solid #e2e7ef;border-radius:5px;background:#edf1f6;min-width:24px;text-align:center;padding:2px 5px;color:#67748a;font-size:11px}.available-filter{display:flex;align-items:center;gap:8px;font-size:12px;color:#65748b;cursor:pointer}.available-filter input{accent-color:var(--blue);width:15px;height:15px;margin:0;cursor:pointer}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+    .tool-card{position:relative;isolation:isolate;width:100%;min-height:170px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:16px;background:white;border:1px solid #e5e9f0;border-radius:12px;box-shadow:0 2px 3px #18365503,0 4px 12px #18365503;transition:transform .2s,box-shadow .2s,border-color .2s;padding:30px 18px 25px;text-align:center}.tool-card:hover{transform:translateY(-4px);box-shadow:0 12px 26px #173d7110;border-color:#b8cef6}.tool-icon{width:50px;height:50px;border-radius:13px;background:#f4f6f9;display:grid;place-items:center;color:#6c7b91;transition:color .2s,background .2s}.tool-icon svg{width:30px;height:30px}.tool-card:hover .tool-icon{color:var(--blue);background:#edf4ff}.tool-title{font-size:14px;line-height:1.4;font-weight:650;letter-spacing:-.2px;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}.status-dot{position:absolute;right:16px;top:16px;width:7px;height:7px;background:#aab4c2;border-radius:50%;box-shadow:0 0 0 3px #f4f6f9}.status-dot.ready{background:#28a576;box-shadow:0 0 0 3px #eaf7f1}.card-arrow{position:absolute;right:15px;bottom:14px;width:15px;height:15px;color:#9ab4de;opacity:0;transition:opacity .2s}.tool-card:hover .card-arrow{opacity:1}
+    .legend{display:flex;gap:18px;align-items:center;color:#8490a2;font-size:11px;margin-top:20px}.legend-item{display:flex;gap:7px;align-items:center}.dot{width:6px;height:6px;display:inline-block;flex-shrink:0;border-radius:50%;background:#aab4c2}.dot.green{background:#28a576}.legend-note{margin-left:auto}.bottom{margin-top:36px;padding:20px 0 0;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:14px;font-size:11px;color:#8490a2}.bottom-left{display:flex;align-items:center;gap:7px}.bottom-left svg{width:14px;height:14px}.shortcut-hint{display:flex;gap:6px;align-items:center}.shortcut-hint kbd{font:inherit;background:white;padding:2px 5px;border:1px solid var(--line);border-radius:4px}
+    .empty{padding:64px 20px;text-align:center;border:1px dashed #dce3ee;border-radius:12px;background:#ffffff66}.empty svg{width:32px;height:32px;color:#96a5ba;margin-bottom:12px}.empty h2{font-size:16px;margin:0 0 8px}.empty p{color:var(--muted);font-size:13px;margin:0 0 18px}.empty button{background:#eaf1ff;color:#245ed6;padding:10px 16px;border-radius:8px;font-size:13px}.hidden,[hidden]{display:none!important}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    dialog{padding:28px;border:1px solid var(--line);border-radius:16px;width:min(420px,calc(100vw - 32px));box-shadow:0 24px 80px #11284733;color:#172339}dialog::backdrop{background:#14243b55;backdrop-filter:blur(3px)}.dialog-icon{width:48px;height:48px;color:var(--blue);background:#eff5ff;border-radius:12px;display:grid;place-items:center;margin-bottom:20px}.dialog-icon svg{width:26px;height:26px}dialog h2{margin:0 0 10px;font-size:20px}dialog p{font-size:14px;color:var(--muted);line-height:1.7;margin:0 0 24px}dialog button{display:block;margin-left:auto;background:var(--blue);color:white;padding:10px 22px;border-radius:8px;font-size:13px;font-weight:600}.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:5;padding:13px 20px;background:#18314f;color:white;border-radius:10px;box-shadow:0 8px 30px #0002;font-size:13px;max-width:calc(100vw - 32px)}
+    @media(min-width:1500px){main{padding-top:58px}.tool-card{min-height:184px}}
+    @media(max-width:850px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.top-meta>span:first-child{display:none}.summary-badge{font-size:11px}.legend-note{display:none}}
+    @media(max-width:560px){.topbar{height:62px;padding:0 20px}main{padding:30px 20px 22px}h1{font-size:29px}.subtitle{font-size:13px}.summary-badge{display:none}.search-row{gap:8px}.clear{padding:0 12px}.clear span{display:none}.key{display:none}.search-wrap input{padding-right:15px}.tabs{flex-wrap:nowrap;overflow-x:auto;margin-right:-20px;padding-right:20px;padding-bottom:6px;scrollbar-width:thin}.tab{flex-shrink:0;padding:9px 14px}.section-head{margin-top:24px}.grid{gap:12px}.tool-card{min-height:156px;padding:24px 10px 20px;gap:14px}.tool-title{font-size:12px}.tool-icon{width:44px;height:44px}.tool-icon svg{width:28px;height:28px}.status-dot{top:12px;right:12px}.bottom{align-items:flex-start;flex-direction:column;margin-top:26px}.shortcut-hint{display:none}.legend{margin-top:18px}}
+    @media(max-width:350px){.grid{grid-template-columns:1fr}.tool-title{font-size:14px}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;scroll-behavior:auto!important}.tool-card:hover{transform:none}}
+  </style>
+</head>
+<body class="bg-gray-50 text-slate-800 antialiased">
+  <!-- Lucide SVG geometry, ISC License, Copyright (c) Lucide Contributors.
+  Permission to use, copy, modify, and/or distribute this software for any purpose
+  with or without fee is hereby granted, provided that the above copyright notice
+  and this permission notice appear in all copies. THE SOFTWARE IS PROVIDED "AS IS"
+  AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING
+  ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE
+  AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES
+  OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER
+  IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. -->
+  <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+    <symbol id="i-panels" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M9 9h12"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m18 6-12 12M6 6l12 12"/></symbol>
+    <symbol id="i-unlock" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1M12 16v2"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 1v3m6-3v3M9 20v3m6-3v3M20 9h3m-3 6h3M1 9h3m-3 6h3"/></symbol>
+    <symbol id="i-drive" viewBox="0 0 24 24"><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11ZM2 12h20M6 16h.01M10 16h.01"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M21 4h-7M10 4H3m18 8H11m-4 0H3m18 8h-3m-4 0H3M14 2v4M7 10v4m11 4v4"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Zm0 0v6h6M8 13h8m-8 4h6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 11a9 9 0 0 1 15.36-6.36L21 7m0-5v5h-5M21 13a9 9 0 0 1-15.36 6.36L3 17m5 0H3v5"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M5 6l1 14a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1l1-14M10 10v7m4-7v7"/></symbol>
+    <symbol id="i-app" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18m-13 6h8"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M7 17 17 7M7 7h10v10"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+  </svg>
+  <header class="topbar">
+    <div class="brand"><span class="brand-icon"><svg aria-hidden="true"><use href="#i-panels"/></svg></span>Utility Rebuild</div>
+    <div class="top-meta"><span>Bộ công cụ Windows</span><span class="version">v0.7.19</span></div>
+  </header>
+  <main>
+    <div class="eyebrow"><svg aria-hidden="true"><use href="#i-grid"/></svg>Không gian công cụ</div>
+    <div class="heading-row">
+      <div><h1>Utility Rebuild</h1><p class="subtitle">Chọn công cụ để bắt đầu công việc</p></div>
+      <div class="summary-badge"><svg aria-hidden="true"><use href="#i-grid"/></svg><span><strong>4</strong> có sẵn <span aria-hidden="true">/</span> 9 công cụ hiển thị</span></div>
+    </div>
+    <section class="controls" aria-label="Tìm và lọc công cụ">
+      <form id="search-form" role="search" class="search-row">
+        <div class="search-wrap"><svg aria-hidden="true"><use href="#i-search"/></svg><label for="search" class="sr-only">Tìm kiếm công cụ</label><input id="search" type="search" placeholder="Tìm kiếm công cụ..." autocomplete="off" spellcheck="false" aria-keyshortcuts="Control+K Meta+K" aria-controls="tools"><kbd class="key" aria-hidden="true">Ctrl K</kbd></div>
+        <button id="clear" class="clear" type="button" aria-label="Xóa tìm kiếm" disabled><svg aria-hidden="true"><use href="#i-x"/></svg><span>Xóa tìm kiếm</span></button>
+      </form>
+      <nav id="filters" class="tabs" aria-label="Nhóm công cụ"></nav>
+    </section>
+    <section aria-labelledby="section-title">
+      <div class="section-head"><div class="section-title"><span id="section-title">Tất cả công cụ</span><span id="count" class="count">9</span></div><label class="available-filter"><input id="available-only" type="checkbox">Chỉ hiện có sẵn</label></div>
+      <p id="announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+      <div id="tools" class="grid"></div>
+      <div id="empty" class="empty" hidden><svg aria-hidden="true"><use href="#i-search"/></svg><h2>Chưa tìm thấy công cụ</h2><p>Thử từ khóa khác hoặc bỏ bộ lọc để xem thêm.</p><button id="reset" type="button">Xóa bộ lọc</button></div>
+      <div class="legend" aria-label="Chú thích trạng thái"><span class="legend-item"><span class="dot green"></span>Có sẵn</span><span class="legend-item"><span class="dot"></span>Chưa có</span><span class="legend-note">Di chuột lên công cụ để xem mô tả</span></div>
+    </section>
+    <footer class="bottom"><span class="bottom-left"><svg aria-hidden="true"><use href="#i-shield"/></svg>Công cụ hỗ trợ kỹ thuật Windows</span><span class="shortcut-hint"><kbd>Ctrl</kbd> + <kbd>K</kbd> để tìm nhanh</span><span>Utility Rebuild · Windows x64</span></footer>
+  </main>
+  <dialog id="detail" aria-labelledby="dialog-title" aria-describedby="dialog-description"><div class="dialog-icon" id="dialog-icon"></div><h2 id="dialog-title"></h2><p id="dialog-description"></p><form method="dialog"><button>Đã hiểu</button></form></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <noscript><p style="padding:24px;text-align:center">Bật JavaScript để xem, tìm kiếm và lọc công cụ.</p></noscript>
+  <script>
+    'use strict';
+    // Inventory reflects these nine requested cards at Git revision 232f4db.
+    // It is not a claim that the complete Windows suite contains only nine tools.
+    const tools = [
+      {id:'bitlocker', title:'Tắt Bitlocker', ready:true, icon:'unlock', description:'Giải mã ổ đĩa BitLocker', category:'Hệ thống', frequent:true, file:'TatBitlocker.exe'},
+      {id:'hardware', title:'Cấu hình máy tính', ready:false, icon:'cpu', description:'Xem thông tin phần cứng', category:'Hệ thống', file:'CheckCauHinh.exe'},
+      {id:'partitions', title:'Phân vùng ổ cứng', ready:false, icon:'drive', description:'Quản lý phân vùng ổ đĩa', category:'Hệ thống', file:'PhanVungOCung.exe'},
+      {id:'windows', title:'Tuỳ chỉnh Windows', ready:true, icon:'sliders', description:'Tinh chỉnh và quản lý Appx', category:'Hệ thống', frequent:true, file:'TuyChinhWindows.exe'},
+      {id:'office', title:'Tuỳ chỉnh Office', ready:false, icon:'file', description:'Thiết lập Microsoft Office', category:'Hệ thống', file:'TuyChinhOffice.exe'},
+      {id:'security', title:'Windows Security', ready:false, icon:'shield', description:'Quản lý bảo mật Windows', category:'Hệ thống', file:'WindowsSecurity.exe'},
+      {id:'updates', title:'Update Windows', ready:true, icon:'refresh', description:'Bật hoặc tắt cập nhật', category:'Hệ thống', frequent:true, file:'QuanLyUpdateWindows.exe'},
+      {id:'cleanup', title:'Dọn rác máy tính', ready:true, icon:'trash', description:'Dọn file tạm và bộ nhớ đệm', category:'Hệ thống', frequent:true, file:'DonRacMayTinh.exe'},
+      {id:'uninstall', title:'Gỡ phần mềm', ready:false, icon:'app', description:'Gỡ ứng dụng đã cài', category:'Hệ thống', file:'GoBoPhanMem.exe'}
+    ];
+    const categories = ['Thường dùng','Tất cả','Cài đặt','Sao lưu','Hệ thống','Hỗ trợ'];
+    // Show all nine cards on first open. Frequent is a real curated subset.
+    let selected = 'Tất cả';
+    const $ = id => document.getElementById(id);
+    const normalize = value => value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/Đ/g,'D').toLowerCase();
+    function icon(name, className='') {
+      const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
+      svg.setAttribute('aria-hidden','true'); if(className) svg.setAttribute('class',className);
+      const use = document.createElementNS('http://www.w3.org/2000/svg','use');
+      use.setAttribute('href','#i-'+name); svg.append(use); return svg;
+    }
+    const tabButtons = categories.map(category => {
+      const button = document.createElement('button'); button.type='button'; button.className='tab'; button.textContent=category;
+      button.addEventListener('click',()=>{selected=category;render();}); $('filters').append(button); return button;
+    });
+    function render() {
+      const words=normalize($('search').value.trim()).split(/\s+/).filter(Boolean);
+      const shown=tools.filter(tool => {
+        const group=selected==='Tất cả'||(selected==='Thường dùng'?tool.frequent:tool.category===selected);
+        const text=normalize(tool.title+' '+tool.description+' '+tool.category+' '+tool.file);
+        return group&&(!$('available-only').checked||tool.ready)&&words.every(word=>text.includes(word));
+      });
+      $('tools').replaceChildren(...shown.map(tool=>{
+        const card=document.createElement('button'); card.type='button'; card.className='tool-card group'; card.title=tool.description;
+        card.setAttribute('aria-label',tool.title+' — '+(tool.ready?'Có sẵn':'Chưa có')+'. '+tool.description);
+        const dot=document.createElement('span'); dot.className='status-dot'+(tool.ready?' ready':'');dot.setAttribute('aria-hidden','true');
+        const wrap=document.createElement('span');wrap.className='tool-icon';wrap.append(icon(tool.icon));
+        const title=document.createElement('span');title.className='tool-title';title.textContent=tool.title;
+        card.append(dot,wrap,title,icon('arrow','card-arrow'));card.addEventListener('click',()=>openTool(tool));return card;
+      }));
+      $('tools').hidden=shown.length===0;$('empty').hidden=shown.length!==0;
+      $('section-title').textContent=words.length?'Kết quả tìm kiếm':selected==='Tất cả'?'Tất cả công cụ':selected;
+      $('count').textContent=shown.length;$('announcement').textContent=shown.length+' công cụ phù hợp trong nhóm '+selected;
+      $('clear').disabled=$('search').value.length===0;
+      tabButtons.forEach((button,index)=>button.setAttribute('aria-pressed',String(categories[index]===selected)));
+    }
+    function openTool(tool) {
+      // Standard browsers cannot launch local EXEs. A Windows WebView2 host can
+      // handle this fixed inventory ID, recheck availability and launch through
+      // the existing confirmation/elevation flow. Never execute arbitrary paths
+      // received from web content. Restrict the WebView navigation to this UI.
+      if(tool.ready && window.chrome?.webview?.postMessage) {
+        window.chrome.webview.postMessage({type:'utility:launch',toolId:tool.id});
+        $('toast').textContent='Đã gửi yêu cầu mở '+tool.title+'.';$('toast').hidden=false;
+        clearTimeout(window.toastTimer);window.toastTimer=setTimeout(()=>$('toast').hidden=true,3500);return;
+      }
+      $('dialog-title').textContent=tool.title;$('dialog-icon').replaceChildren(icon(tool.icon));
+      $('dialog-description').textContent=tool.ready
+        ?tool.description+'. Module đã có trong bộ tools Windows. Bản HTML xem trước cần được tích hợp với launcher Windows để mở module này.'
+        :tool.description+'. Module này chưa được triển khai trong bản hiện tại.';
+      $('detail').showModal();
+    }
+    $('search').addEventListener('input',render);
+    $('search-form').addEventListener('submit',event=>event.preventDefault());
+    $('clear').addEventListener('click',()=>{$('search').value='';render();$('search').focus();});
+    $('available-only').addEventListener('change',render);
+    $('reset').addEventListener('click',()=>{selected='Tất cả';$('available-only').checked=false;$('search').value='';render();$('search').focus();});
+    document.addEventListener('keydown',event=>{
+      if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'&&!$('detail').open){event.preventDefault();$('search').focus();$('search').select();}
+      if(event.key==='Escape'&&document.activeElement===$('search')){$('search').value='';render();}
+    });
+    render();
+  </script>
+</body>
+</html>

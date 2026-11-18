@@ -3,8 +3,8 @@
 //!
 //! Tương đương giao diện launcher PowerShell (launcher/Utility.ps1):
 //! cửa sổ native chuẩn Windows, header (tiêu đề + thông tin OS / PC-Name / User),
-//! lưới 4 cột x 8 hàng gồm 32 nút chức năng tiếng Việt, ô tìm kiếm lọc
-//! nút (không phân biệt dấu), nút Xoá và Giới thiệu ở footer.
+//! danh mục và truy cập nhanh công cụ thường dùng, tìm kiếm không dấu,
+//! mô tả công việc và trạng thái module thực tế trong gói.
 //!
 //! Bấm một nút chức năng sẽ chạy file modules\<TênModule>.exe nằm cạnh
 //! launcher bằng quyền Administrator (ShellExecute "runas"); nếu module
@@ -15,6 +15,8 @@
 //!
 //! Giao diện dùng màu hệ thống mặc định của Windows cho mọi control.
 
+mod icons;
+use std::cell::Cell;
 use std::env;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
@@ -29,13 +31,34 @@ use winapi::shared::windef::RECT;
 use winapi::um::shellapi::ShellExecuteW;
 use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_LOCAL_MACHINE};
 use winapi::um::winnt::KEY_READ;
-use winapi::um::winuser::{GetClientRect, SW_SHOWNORMAL};
+use winapi::um::winuser::{GetClientRect, GetWindowLongW, SetWindowLongW, BS_MULTILINE, GWL_STYLE, SW_SHOWNORMAL};
 
 // ---------------------------------------------------------------------------
 // Kích thước bố cục
 // ---------------------------------------------------------------------------
-const HEADER_H: i32 = 86;
+const HEADER_H: i32 = 220;
 const FOOTER_H: i32 = 52;
+const CATEGORIES: &[&str] = &["Thường dùng", "Tất cả", "Cài đặt", "Sao lưu", "Hệ thống", "Hỗ trợ"];
+const FREQUENT: &[usize] = &[6, 7, 3, 24, 20, 23, 13, 18];
+// Metadata theo thứ tự MODULES; giữ nguyên tên file module và cách khởi chạy.
+const DETAILS: &[(&str, usize)] = &[
+    ("Driver lưu trữ Intel", 2), ("Nguồn bộ cài Windows", 2),
+    ("Sao lưu bản quyền Microsoft", 3), ("Sao lưu và khôi phục driver", 3),
+    ("Giải mã ổ đĩa BitLocker", 4), ("Chuẩn bị môi trường cứu hộ", 2),
+    ("Chuẩn bị và cài qua WinPE", 2), ("Cài trực tiếp trong WinPE", 2),
+    ("Cài Office qua mạng", 2), ("Cài Office từ bộ cài có sẵn", 2),
+    ("Quản lý kích hoạt bản quyền", 2), ("Cài ứng dụng cho máy", 2),
+    ("Sao lưu dữ liệu cá nhân", 3), ("Lưu và quản lý mạng Wi-Fi", 3),
+    ("Sao lưu dữ liệu trình duyệt", 3), ("Sao lưu và khôi phục Zalo", 3),
+    ("Xem thông tin phần cứng", 4), ("Kiểm tra tình trạng máy", 5),
+    ("Tra phím BIOS và Boot Menu", 5), ("Quản lý phân vùng ổ đĩa", 4),
+    ("Tinh chỉnh và quản lý Appx", 4), ("Thiết lập Microsoft Office", 4),
+    ("Quản lý bảo mật Windows", 4), ("Bật hoặc tắt cập nhật", 4),
+    ("Dọn file tạm và bộ nhớ đệm", 4), ("Gỡ ứng dụng đã cài", 4),
+    ("Khắc phục sự cố in ấn", 5), ("Thiết lập máy in", 5),
+    ("Khắc phục chia sẻ nội bộ", 5), ("Thao tác tệp và thư mục", 5),
+    ("Chuyển hệ điều hành Windows", 2), ("Sử dụng nhiều phiên Zalo", 5),
+];
 
 // ---------------------------------------------------------------------------
 // Danh sách 32 chức năng: nhãn hiển thị -> file module .exe trong modules\
@@ -50,11 +73,11 @@ const MODULES: &[ModuleDef] = &[
     ModuleDef { label: "Kho Driver IRST", file: "KhoDriverIRST.exe" },
     ModuleDef { label: "Kho Windows", file: "KhoWindows.exe" },
     ModuleDef { label: "Backup License MS", file: "BackupLicenseMS.exe" },
-    ModuleDef { label: "Backup/Restore Driver", file: "BackupRestoreDriver.exe" },
+    ModuleDef { label: "Sao lưu / Khôi phục driver", file: "BackupRestoreDriver.exe" },
     ModuleDef { label: "Tắt Bitlocker", file: "TatBitlocker.exe" },
     ModuleDef { label: "Tạo Boot WinPE", file: "TaoBootWinPE.exe" },
     ModuleDef { label: "Cài Đặt Win Tự Động", file: "CaiDatWinTuDong.exe" },
-    ModuleDef { label: "Cài Đặt Win=WinPE", file: "CaiDatWinWinPE.exe" },
+    ModuleDef { label: "Cài Windows trong WinPE", file: "CaiDatWinWinPE.exe" },
     ModuleDef { label: "Cài Đặt Office Online", file: "CaiDatOfficeOnline.exe" },
     ModuleDef { label: "Cài Đặt Office OFFLINE", file: "CaiDatOfficeOffline.exe" },
     ModuleDef { label: "Kích Hoạt Win/Office", file: "KichHoatWinOffice.exe" },
@@ -63,7 +86,7 @@ const MODULES: &[ModuleDef] = &[
     ModuleDef { label: "Sao Lưu/Quản lý Wifi", file: "SaoLuuWifi.exe" },
     ModuleDef { label: "Sao Lưu Chrome-Edge", file: "SaoLuuChromeEdge.exe" },
     ModuleDef { label: "Backup/Restore Zalo", file: "BackupRestoreZalo.exe" },
-    ModuleDef { label: "Check Cấu Hình Máy Tính", file: "CheckCauHinh.exe" },
+    ModuleDef { label: "Xem cấu hình máy tính", file: "CheckCauHinh.exe" },
     ModuleDef { label: "Check / Test", file: "CheckTest.exe" },
     ModuleDef { label: "Phím Tắt BIOS", file: "PhimTatBIOS.exe" },
     ModuleDef { label: "Phân Vùng Ổ Cứng", file: "PhanVungOCung.exe" },
@@ -89,6 +112,12 @@ struct AppState {
     search: nwg::TextInput,
     btn_clear: nwg::Button,
     btn_about: nwg::Button,
+    categories: Vec<nwg::Button>,
+    category: Cell<usize>,
+    summary: nwg::Label,
+    _labels: Vec<nwg::Label>,
+    window: nwg::ControlHandle,
+    _icons: Vec<icons::ButtonIcon>,
 }
 
 // ---------------------------------------------------------------------------
@@ -239,10 +268,37 @@ fn start_module(index: usize) {
 /// Lọc nút theo ô tìm kiếm (không phân biệt dấu)
 fn apply_search_filter(state: &AppState) {
     let query = unaccented(&state.search.text()).trim().to_lowercase();
-    for (i, btn) in state.buttons.iter().enumerate() {
-        let visible = query.is_empty()
-            || unaccented(MODULES[i].label).to_lowercase().contains(&query);
-        btn.set_visible(visible);
+    let category = state.category.get();
+    let mut rc: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetClientRect(state.window.hwnd().unwrap(), &mut rc); }
+    let cell_w = (rc.right - 40) / 4;
+    let cell_h = (rc.bottom - HEADER_H - FOOTER_H) / 8;
+    let order: Vec<usize> = if query.is_empty() && category == 0 {
+        FREQUENT.to_vec()
+    } else { (0..MODULES.len()).collect() };
+    for btn in &state.buttons { btn.set_visible(false); }
+    let mut count = 0;
+    for i in order {
+        let visible = if query.is_empty() {
+            category <= 1 || DETAILS[i].1 == category
+        } else {
+            let text = unaccented(&format!("{} {} {}", MODULES[i].label, DETAILS[i].0, CATEGORIES[DETAILS[i].1])).to_lowercase();
+            query.split_whitespace().all(|word| text.contains(word))
+        };
+        if visible {
+            let btn = &state.buttons[i];
+            btn.set_position(20 + (count % 4) * cell_w, HEADER_H + (count / 4) * cell_h);
+            btn.set_size((cell_w - 8) as u32, (cell_h - 8) as u32);
+            btn.set_visible(true);
+            count += 1;
+        }
+    }
+    let title = if query.is_empty() { CATEGORIES[category] } else { "Kết quả tìm kiếm (tất cả danh mục)" };
+    state.summary.set_text(&if count == 0 {
+        "Không tìm thấy công cụ. Thử từ khóa khác hoặc xoá tìm kiếm.".to_string()
+    } else { format!("{} · {} công cụ", title, count) });
+    for (i, btn) in state.categories.iter().enumerate() {
+        btn.set_text(&if i == category { format!("[{}]", CATEGORIES[i]) } else { CATEGORIES[i].to_string() });
     }
 }
 
@@ -291,7 +347,7 @@ fn build_ui() -> (nwg::Window, Rc<AppState>) {
     // --- Cửa sổ chính ---
     let mut window = Default::default();
     nwg::Window::builder()
-        .size((940, 714))
+        .size((1120, 900))
         .position((200, 120))
         .title("Utility Rebuild")
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::MINIMIZE_BOX)
@@ -323,7 +379,7 @@ fn build_ui() -> (nwg::Window, Rc<AppState>) {
     // --- Header ---
     let _lbl_title = add_label("Utility Rebuild", font_title, (18, 10), (420, 34));
     let _lbl_sub = add_label(
-        "Bộ công cụ hỗ trợ cài đặt Windows - Software",
+        "Chọn công cụ để bắt đầu công việc",
         font_normal,
         (20, 50),
         (440, 22),
@@ -347,23 +403,31 @@ fn build_ui() -> (nwg::Window, Rc<AppState>) {
     let cell_h = (grid_y1 - grid_y0) / 8;
 
     let mut buttons: Vec<nwg::Button> = Vec::with_capacity(MODULES.len());
+    let mut button_icons = Vec::new();
     for (i, module) in MODULES.iter().enumerate() {
         let col = (i % 4) as i32;
         let row = (i / 4) as i32;
         let mut btn = Default::default();
         nwg::Button::builder()
-            .text(module.label)
-            .font(Some(font_button))
+            .text(&format!("{}\r\n{}\r\n{}", module.label, DETAILS[i].0,
+                if modules_dir().join(module.file).is_file() { "Có sẵn" } else { "Chưa có trong gói" }))
+            .font(Some(font_small))
             .parent(&window)
             .build(&mut btn)
             .expect("button");
         btn.set_position(grid_x0 + col * cell_w + 6, grid_y0 + row * cell_h + 6);
         btn.set_size((cell_w - 12) as u32, (cell_h - 12) as u32);
+        // NWG không khai báo BS_MULTILINE trong ButtonFlags.
+        unsafe {
+            let hwnd = btn.handle.hwnd().unwrap();
+            SetWindowLongW(hwnd, GWL_STYLE, GetWindowLongW(hwnd, GWL_STYLE) | BS_MULTILINE as i32);
+        }
+        if let Some(icon) = icons::attach(&btn, module.file) { button_icons.push(icon); }
         buttons.push(btn);
     }
 
     // --- Footer: tìm kiếm + Xoá + Giới thiệu ---
-    let footer_y = client_h - FOOTER_H;
+    let footer_y = 78;
     let _lbl_search = add_label("Tìm kiếm :", font_normal, (14, footer_y + 15), (84, 24));
 
     let mut search = Default::default();
@@ -374,17 +438,17 @@ fn build_ui() -> (nwg::Window, Rc<AppState>) {
         .build(&mut search)
         .expect("search");
     search.set_position(100, footer_y + 11);
-    search.set_size(240, 30);
+    search.set_size(470, 32);
 
     let mut btn_clear = Default::default();
     nwg::Button::builder()
-        .text("Xoá")
+        .text("Xoá tìm kiếm")
         .font(Some(font_button))
         .parent(&window)
         .build(&mut btn_clear)
         .expect("btn clear");
-    btn_clear.set_position(350, footer_y + 10);
-    btn_clear.set_size(70, 32);
+    btn_clear.set_position(582, footer_y + 10);
+    btn_clear.set_size(136, 32);
 
     let mut btn_about = Default::default();
     nwg::Button::builder()
@@ -393,14 +457,32 @@ fn build_ui() -> (nwg::Window, Rc<AppState>) {
         .parent(&window)
         .build(&mut btn_about)
         .expect("btn about");
-    btn_about.set_position(client_w - 124, footer_y + 10);
+    btn_about.set_position(client_w - 124, client_h - 42);
     btn_about.set_size(110, 32);
 
+    let mut categories = Vec::new();
+    for (i, name) in CATEGORIES.iter().enumerate() {
+        let mut button = nwg::Button::default();
+        nwg::Button::builder().text(name).font(Some(font_normal)).parent(&window)
+            .position((20 + i as i32 * 152, 140)).size((144, 36))
+            .build(&mut button).expect("category");
+        categories.push(button);
+    }
+    let summary = add_label("", font_button, (20, 188), ((client_w - 40) as u32, 28));
+    let hint = add_label("Tìm theo tên hoặc công việc, có thể gõ không dấu.", font_small, (100, 116), (700, 20));
+    let footer = add_label("Trạng thái công cụ dựa trên file module trong gói đang mở.", font_small,
+        (20, client_h - 34), (740, 24));
     let state = Rc::new(AppState {
         buttons,
         search,
         btn_clear,
         btn_about,
+        categories,
+        category: Cell::new(0),
+        summary,
+        _labels: vec![_lbl_title, _lbl_sub, _lbl_sys, _lbl_search, hint, footer],
+        window: window.handle,
+        _icons: button_icons,
     });
 
     // --- Sự kiện NWG: bấm nút + gõ ô tìm kiếm ---
@@ -416,6 +498,10 @@ fn build_ui() -> (nwg::Window, Rc<AppState>) {
                         "Giới thiệu",
                         "Utility Rebuild\nBộ công cụ hỗ trợ cài đặt Windows - Software.\n\nBản dựng lại độc lập (clean-room) bằng Rust,\ntương đương chức năng với công cụ gốc.",
                     );
+                } else if let Some(i) = handler_state.categories.iter().position(|btn| handle == btn.handle) {
+                    handler_state.category.set(i);
+                    handler_state.search.set_text("");
+                    apply_search_filter(&handler_state);
                 } else {
                     for (i, btn) in handler_state.buttons.iter().enumerate() {
                         if handle == btn.handle {
@@ -430,10 +516,12 @@ fn build_ui() -> (nwg::Window, Rc<AppState>) {
                     apply_search_filter(&handler_state);
                 }
             }
+            nwg::Event::OnWindowClose => nwg::stop_thread_dispatch(),
             _ => {}
         }
     });
 
+    apply_search_filter(&state);
     state.search.set_focus();
     (window, state)
 }
