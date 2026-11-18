@@ -2266,6 +2266,115 @@ fn mount_inject_winpe(
     Ok(())
 }
 
+/// Đóng gói lại WinPE thành WIM MỘT ẢNH bootable (v0.7.15).
+///
+/// Gốc lỗi thực địa (log install-20261117-1746.log, máy
+/// DESKTOP-704R89L, ISO mod): wizard chọn đúng index 1 theo tên
+/// ("Microsoft Windows PE"), mount + inject + commit thành công,
+/// BCD ramdisk một lần đăng ký đúng công thức — nhưng khi boot,
+/// winload nạp ảnh "Microsoft Windows Setup" (index 2) thay vì
+/// ảnh PE đã inject, máy lên thẳng Windows Setup đòi driver.
+/// Nguyên nhân: winpe.wim staging vẫn mang CẢ HAI ảnh và header
+/// của nó không chỉ định ảnh PE đã inject là ảnh boot (WIM mod
+/// không có "Boot Index", chi tiết index báo "WIM Bootable: No").
+///
+/// Sửa tận gốc theo đúng nguyên tắc của tool gốc (nó trích ảnh PE
+/// ra WIM riêng một ảnh): xuất RIÊNG index vừa inject sang
+/// winpe_single.wim bằng /Export-Image /Bootable /Compress:Max,
+/// xoá bản hai-ảnh, đổi tên bản một-ảnh thành winpe.wim. WIM
+/// đích chỉ còn đúng một ảnh và ảnh đó mang cờ boot — winload
+/// không còn ảnh nào khác để nạp nhầm.
+///
+/// Đây là bước ĐÓNG GÓI, không phải cổng kiểm chứng: hàm không
+/// đọc/phán cờ bootable từ output DISM (cổng phán quyết đó đã gỡ
+/// ở v0.7.11 và không quay lại). Chỉ khi chính lệnh export lỗi,
+/// hoặc file đích không tồn tại/rỗng, mới dừng — dừng TRƯỚC đăng
+/// ký BCD, staging chưa hề có mục boot nào được ghi.
+///
+/// Trả về kích thước (byte) của winpe.wim sau đóng gói lại.
+fn repack_winpe_single_image(log: &Arc<Logger>, wim: &Path, index: u32) -> Result<u64, String> {
+    let single = wim.with_file_name("winpe_single.wim");
+    // File đích còn sót từ lần chạy trước phải xoá trước — DISM
+    // sẽ APPEND thêm index vào file đã tồn tại thay vì tạo mới,
+    // và toàn bộ ý nghĩa "một ảnh" sẽ mất.
+    let _ = clear_readonly_file(&single);
+    let _ = std::fs::remove_file(&single);
+    let src_arg = format!("/SourceImageFile:{}", wim.to_string_lossy());
+    let sidx_arg = format!("/SourceIndex:{}", index);
+    let dst_arg = format!("/DestinationImageFile:{}", single.to_string_lossy());
+    log.line(&format!(
+        "$ dism /English /Export-Image {} {} {} /Bootable /Compress:Max",
+        src_arg, sidx_arg, dst_arg
+    ));
+    let exp_lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let log_e = log.clone();
+    let exp_lines2 = exp_lines.clone();
+    let export_res = cmd::run_streaming(
+        "dism",
+        &["/English", "/Export-Image", &src_arg, &sidx_arg, &dst_arg, "/Bootable", "/Compress:Max"],
+        move |line| {
+            let t = line.trim();
+            if !t.is_empty() {
+                log_e.line(&format!("  | {}", t));
+                if let Ok(mut v) = exp_lines2.lock() {
+                    v.push(t.to_string());
+                }
+            }
+        },
+    );
+    let export_code = match &export_res {
+        Ok(c) => *c,
+        Err(_) => None,
+    };
+    if export_res.is_err() || export_code != Some(0) {
+        return Err(match &export_res {
+            Err(e) => format!("không chạy được DISM để đóng gói lại WinPE: {}", e),
+            Ok(_) => {
+                let collected = exp_lines
+                    .lock()
+                    .map(|v| v.join("\n"))
+                    .unwrap_or_default();
+                cmd_fail_msg("DISM đóng gói lại WinPE (Export-Image một ảnh)", export_code, &collected)
+            }
+        });
+    }
+    // File đích phải tồn tại và không rỗng mới được thay bản gốc.
+    let single_size = match std::fs::metadata(&single) {
+        Ok(m) if m.len() > 0 => m.len(),
+        Ok(_) => {
+            return Err(format!(
+                "DISM báo export thành công nhưng file {} rỗng — dừng trước đăng ký BCD, winpe.wim gốc giữ nguyên.",
+                single.display()
+            ));
+        }
+        Err(e) => {
+            return Err(format!(
+                "DISM báo export thành công nhưng không thấy file {}: {} — dừng trước đăng ký BCD, winpe.wim gốc giữ nguyên.",
+                single.display(),
+                e
+            ));
+        }
+    };
+    // Thay tên: xoá bản hai-ảnh, bản một-ảnh đã inject mang tên
+    // winpe.wim — BCD (trỏ \<staging>\winpe.wim) và engine WinPE
+    // ở các bước sau hoàn toàn không thay đổi.
+    let _ = clear_readonly_file(wim);
+    std::fs::remove_file(wim).map_err(|e| {
+        format!("không xoá được winpe.wim hai-ảnh để thay bằng bản một ảnh: {}", e)
+    })?;
+    std::fs::rename(&single, wim).map_err(|e| {
+        format!("không đổi tên được winpe_single.wim thành winpe.wim: {}", e)
+    })?;
+    // Bản mới không được mang read-only (DISM/engine các bước sau
+    // và lần chạy kế tiếp đều cần ghi được).
+    let _ = clear_readonly_file(wim);
+    log.line(&format!(
+        "Đã đóng gói lại WinPE: winpe.wim nay chỉ còn một ảnh (index {} đã inject), {} byte.",
+        index, single_size
+    ));
+    Ok(single_size)
+}
+
 fn exec_clean(
     shared: &SharedRef,
     sender: &nwg::NoticeSender,
@@ -2425,6 +2534,11 @@ fn exec_clean(
     // thay tên thành winpe.wim, nên BCD (trỏ \<staging>\winpe.wim)
     // và engine WinPE ở các bước sau hoàn toàn không thay đổi.
     let mnt = stage_dir.join("mnt");
+    // Index THẬT SỰ đã inject trong winpe.wim cuối cùng: đường
+    // mount thẳng là boot_index; đường dự phòng export là index
+    // của bản xuất (export_index). Bước đóng gói lại một ảnh
+    // (v0.7.15) ở dưới xuất đúng index này.
+    let mut injected_index = boot_index;
     if let Err(first_err) = mount_inject_winpe(log, &wim_dst, boot_index, &mnt, &stage_dir, settings) {
         log.line(&format!("Mount WinPE bản gốc thất bại: {}", first_err));
         log.line("Thử đường dự phòng cuối: DISM /Export-Image sang WIM nén chuẩn rồi mount lại.");
@@ -2493,6 +2607,7 @@ fn exec_clean(
             ));
             return;
         }
+        injected_index = export_index;
         // Thay tên: xoá bản gốc không mount được, bản xuất đã
         // inject mang tên winpe.wim — mọi bước sau (BCD,
         // stage.json, engine WinPE) giữ nguyên hệt như khi mount
@@ -2507,21 +2622,46 @@ fn exec_clean(
         }
     }
 
+    // --- Đóng gói lại WinPE thành WIM một ảnh bootable: 69% (v0.7.15)
+    // Cả hai đường mount ở trên đều kết thúc với winpe.wim ĐÃ
+    // INJECT nhưng vẫn mang CẢ HAI ảnh của boot.wim gốc, và
+    // header của nó không chỉ định ảnh PE đã inject là ảnh boot
+    // — thực địa 2026-11-17 (log 17:46) winload đã nạp nhầm ảnh
+    // Windows Setup, máy lên thẳng Setup đòi driver thay vì
+    // engine của tool. Đóng gói lại MỘT ẢNH áp dụng VÔ ĐIỀU KIỆN
+    // cho mọi ca cài mới (ISO mod hay ISO gốc, bất kỳ index nào
+    // đã chọn) để hành vi đồng nhất: xem
+    // repack_winpe_single_image. Lỗi ở bước này dừng TRƯỚC đăng
+    // ký BCD — đây là lỗi đóng gói, KHÔNG phải cổng kiểm chứng
+    // cờ bootable (cổng đó vẫn gỡ hẳn, xem mốc 71% ngay dưới).
+    set_exec_progress(shared, sender, 69, "Đóng gói lại WinPE (WIM một ảnh bootable)...");
+    // [Cơ chế] (v0.7.15): vì sao phải đóng gói lại một ảnh.
+    log.line("[Cơ chế] Đóng gói lại WinPE thành WIM một ảnh: boot.wim của ISO mang hai ảnh (Windows PE + Windows Setup) và header không chỉ định ảnh PE đã inject là ảnh boot, nên khi khởi động winload có thể nạp ảnh Setup thay vì engine của tool — wizard xuất riêng ảnh PE đã inject thành một WIM mới chỉ có một ảnh, gắn cờ bootable, để lúc boot winload chỉ có thể khởi động đúng engine của tool (cùng nguyên tắc đóng gói lại WinPE của tool gốc).");
+    if let Err(e) = repack_winpe_single_image(log, &wim_dst, injected_index) {
+        fail(format!(
+            "Đóng gói lại WinPE thành WIM một ảnh thất bại — dừng trước đăng ký BCD, máy chưa có mục boot mới nào.\n{}",
+            e
+        ));
+        return;
+    }
+
     // --- Bỏ qua kiểm tra cờ bootable của WinPE WIM: 71% (v0.7.11)
     // Chỉ thị trực tiếp của người dùng ("Bỏ qua kiểm tra"): cổng
     // kiểm chứng + chuẩn hoá cờ bootable của v0.7.7 (phân tích
     // text /Get-WimInfo của DISM, xuất lại /Bootable rồi kiểm
     // chứng lại) đã chặn oan 4/4 lần chạy thực địa — kể cả với
     // ISO Microsoft gốc — trong khi các tool khác vẫn cài bình
-    // thường từ chính các ISO đó. Từ v0.7.11 wizard dùng WinPE
-    // NGUYÊN TRẠNG của ISO: cả hai đường mount ở trên (mount
-    // thẳng, hoặc export dự phòng khi mount lỗi rồi mount bản
-    // xuất) đều kết thúc với winpe.wim ĐÃ INJECT tại staging,
-    // và flow đi thẳng sang đăng ký BCD. Mục boot vẫn là boot
-    // một lần (/bootsequence) nên nếu WinPE không lên được, máy
-    // quay về Windows cũ và không có gì bị xoá.
+    // thường từ chính các ISO đó. Cổng phán quyết đó vẫn GỠ HẲN:
+    // wizard không đọc/phán cờ bootable ở bất kỳ đâu. Khác với
+    // "nguyên trạng" của v0.7.11–v0.7.14, từ v0.7.15 winpe.wim
+    // đã inject được ĐÓNG GÓI LẠI thành WIM một ảnh bootable ở
+    // mốc 69% ngay trên (bước đóng gói thuần tuý, không phán
+    // quyết, không kiểm chứng) rồi flow đi thẳng sang đăng ký
+    // BCD. Mục boot vẫn là boot một lần (/bootsequence) nên nếu
+    // WinPE không lên được, máy quay về Windows cũ và không có
+    // gì bị xoá.
     set_exec_progress(shared, sender, 71, "Hoàn tất chuẩn bị WinPE...");
-    log.line("Bỏ qua kiểm tra cờ bootable (theo yêu cầu) — dùng WinPE nguyên trạng của ISO.");
+    log.line("Bỏ qua kiểm tra cờ bootable (theo yêu cầu) — không phán cờ boot bằng output DISM; WinPE đã inject được đóng gói lại thành WIM một ảnh bootable ở bước trên.");
     // [Cơ chế] (v0.7.12): lý do gỡ cổng kiểm chứng — bản đầy đủ ở
     // tab "Tài liệu" mục 9.
     log.line("[Cơ chế] Không kiểm tra cờ bootable: cổng kiểm chứng cũ phán cờ boot bằng cách đọc chữ trong output DISM /Get-WimInfo và đã kết luận sai 4/4 lần chạy thực địa — chặn cả ISO Microsoft gốc — trong khi các tool khác vẫn cài bình thường từ chính các ISO đó; an toàn được đảm bảo bằng mục boot một lần và đối chiếu serial thay vì cổng phán quyết này.");
@@ -2706,8 +2846,8 @@ NẾU WINPE KHÔNG LÊN ĐƯỢC
 
 /// Tab 4 — tài liệu cơ chế công nghệ của CHÍNH bản build hiện
 /// tại (cơ chế staging/WinPE của v0.7.11 + chế độ phân vùng
-/// rebuild của v0.7.13). Bản sao dạng markdown:
-/// docs/co_che_v0.7.13.md.
+/// rebuild của v0.7.13 + đóng gói lại WinPE một ảnh của
+/// v0.7.15). Bản sao dạng markdown: docs/co_che_v0.7.15.md.
 const TAI_LIEU_TEXT: &str = r#"TÀI LIỆU CƠ CHẾ — CÀI MỚI QUA WINPE (cơ chế của bản build hiện tại)
 
 Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài mới từ xa (qua WinPE)". Quá trình gồm hai giai đoạn: chuẩn bị (staging) chạy trong Windows hiện tại bằng wizard này, và cài thật chạy trong WinPE bằng engine WinPEInstall.exe.
@@ -2720,6 +2860,7 @@ Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài 
 2. CHỌN ẢNH WINPE TRONG boot.wim
 - boot.wim của ISO thường có 2 ảnh: "Microsoft Windows PE" và "Microsoft Windows Setup". Wizard chọn ảnh để mount và inject theo thứ tự: (1) "Boot Index" do header của WIM ghi sẵn — chính là ảnh mà bộ cài của Microsoft sẽ boot; (2) nếu header không mang Boot Index (hay gặp ở ISO mod đóng gói lại), chọn theo TÊN ảnh chứa "Windows PE" và không chứa "Setup".
 - Ảnh được chọn được mount bằng DISM, inject các file khởi động của engine (qsu_start.cmd, startnet.cmd, winpeshl.ini) cùng WinPEInstall.exe, rồi unmount /Commit. Nếu mount bản gốc thất bại (WIM nén solid / dạng ESD), wizard xuất lại ảnh đó (Export-Image, nén Max) rồi mount bản xuất và thay tên thành winpe.wim — các bước sau không thay đổi.
+- Ngay sau khi inject xong (từ v0.7.15, áp dụng cho MỌI ca cài mới): wizard ĐÓNG GÓI LẠI ảnh PE đã inject thành một WIM mới chỉ có đúng một ảnh — DISM /Export-Image /Bootable /Compress:Max xuất riêng index đã inject sang winpe_single.wim, xoá bản hai-ảnh, đổi tên bản một-ảnh thành winpe.wim. Lý do: winpe.wim sau inject vẫn mang cả hai ảnh của boot.wim gốc và header không chỉ định ảnh PE đã inject là ảnh boot, nên khi khởi động winload có thể nạp ảnh Windows Setup thay vì engine của tool (thực địa 2026-11-17: máy lên thẳng Windows Setup đòi driver). WIM một ảnh mang cờ boot thì winload chỉ có thể khởi động đúng engine — cùng nguyên tắc đóng gói lại WinPE của tool gốc. Đây là bước đóng gói thuần tuý: wizard vẫn KHÔNG đọc/phán cờ bootable từ output DISM (mục 9); chỉ khi chính lệnh export lỗi hoặc file đích rỗng thì dừng, và dừng TRƯỚC khi đăng ký BCD.
 
 3. boot.sdi THEO FIRMWARE
 - boot.sdi là file mồi để Boot Manager nạp WinPE từ ramdisk; biến thể của nó phải khớp kiểu firmware: UEFI dùng bản EFI, Legacy/BIOS dùng bản PCAT.
@@ -2747,7 +2888,7 @@ Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài 
 
 9. KHÔNG KIỂM TRA CỜ BOOTABLE (đã gỡ ở v0.7.11)
 - Các bản trước từng có một cổng kiểm chứng cờ bootable của winpe.wim: đọc chữ trong output DISM /Get-WimInfo, nếu phán "chưa đạt" thì xuất lại với /Bootable rồi kiểm chứng lại, vẫn "chưa đạt" thì chặn đứng trước khi đăng ký BCD. Thực địa cho thấy cổng này kết luận sai 4/4 lần chạy — chặn cả ISO Microsoft gốc — trong khi các tool khác vẫn cài bình thường từ chính các ISO đó.
-- Theo yêu cầu của người dùng, từ v0.7.11 cổng này bị gỡ hẳn: wizard dùng WinPE nguyên trạng của ISO. Tính an toàn được đảm bảo bằng mục boot một lần (mục 5) và đối chiếu serial (mục 6), thay vì bằng một cổng phán quyết đã chứng minh là phán sai.
+- Theo yêu cầu của người dùng, từ v0.7.11 cổng này bị gỡ hẳn và KHÔNG quay lại: wizard không đọc/phán cờ bootable ở bất kỳ đâu. Từ v0.7.15, thay cho việc dùng WinPE nguyên trạng, wizard đóng gói lại ảnh PE đã inject thành WIM một ảnh bootable (mục 2) — đó là bước đóng gói cơ học để winload không nạp nhầm ảnh Setup, không kèm bất kỳ phán quyết hay kiểm chứng nào. Tính an toàn được đảm bảo bằng mục boot một lần (mục 5) và đối chiếu serial (mục 6), thay vì bằng một cổng phán quyết đã chứng minh là phán sai.
 
 10. LOG
 - Toàn bộ quá trình được ghi vào file install-<thời gian>.log trong thư mục QSU-Logs trên ổ Data, đồng thời hiện ở ô log của wizard. Các dòng bắt đầu bằng [Cơ chế] giải thích ngắn gọn công nghệ đang áp dụng tại bước đó.

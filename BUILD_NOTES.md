@@ -1231,6 +1231,74 @@ reboot vào WinPE để engine cài thật.
   **Chưa test trên máy thật** — ca test quyết định: máy test
   demo 1 đĩa theo mục HUONG-DAN ở trên.
 
+## v0.7.15 — Đóng gói lại WinPE thành WIM một ảnh bootable (2026-11-18)
+
+- **Chẩn đoán từ log thực địa** `install-20261117-1746.log`
+  (chạy v0.7.14 trên DESKTOP-704R89L, ISO mod
+  Windows11-Pro-HDD4G, chế độ wipeDisk): wizard làm đúng mọi
+  bước — 17:48:47 probe `/Get-WimInfo` thấy boot.wim KHÔNG có
+  "Boot Index", index 1 = "Microsoft Windows PE (amd64)" (chi
+  tiết: "WIM Bootable: No"), index 2 = "Microsoft Windows
+  Setup", chọn index 1 theo tên; 17:48:59 mount + inject
+  qsu_start.cmd/startnet.cmd/winpeshl.ini/WinPEInstall.exe +
+  unmount /Commit thành công; 17:49:19 đăng ký BCD ramdisk
+  một lần đúng công thức. Nhưng khi reboot, winload nạp ảnh
+  **Windows Setup** thay vì ảnh PE đã inject — máy lên thẳng
+  Windows Setup đòi media driver. Gốc lỗi: winpe.wim staging
+  vẫn mang CẢ HAI ảnh và header không chỉ định ảnh PE đã
+  inject là ảnh boot.
+- **Bản sửa (chỉ crate cai_dat_win):** hàm mới
+  `repack_winpe_single_image()` chạy ở mốc 69% của
+  `exec_clean`, NGAY SAU mount/inject thành công (cả hai
+  đường: mount thẳng — index = boot_index; export dự phòng —
+  index = export_index, theo dõi bằng biến `injected_index`)
+  và TRƯỚC đăng ký BCD:
+  `dism /English /Export-Image /SourceImageFile:<staging>\winpe.wim /SourceIndex:<index đã inject> /DestinationImageFile:<staging>\winpe_single.wim /Bootable /Compress:Max`
+  (xoá file đích sót trước vì DISM append vào file có sẵn),
+  log nguyên văn lệnh + output như mọi lệnh DISM khác; export
+  trả mã khác 0 hoặc file đích thiếu/rỗng → dừng bằng thông
+  báo đọc được TRƯỚC BCD (winpe.wim gốc còn nguyên). Thành
+  công: xoá bản hai-ảnh, đổi tên winpe_single.wim →
+  winpe.wim, gỡ read-only, log kích thước mới. Áp dụng VÔ
+  ĐIỀU KIỆN cho mọi ca cài mới (ISO mod hay gốc, mọi index).
+- **Không phải cổng kiểm chứng quay lại:** hàm không hề đọc
+  /Get-WimInfo hay phán "WIM Bootable: Yes/No" — cổng phán
+  quyết của v0.7.7 vẫn gỡ hẳn như v0.7.11. Đây là bước đóng
+  gói cơ học theo đúng nguyên tắc của tool gốc (nó trích ảnh
+  PE ra WIM riêng một ảnh). Vì thế dòng log mốc 71% cũng đổi
+  chữ: không còn "dùng WinPE nguyên trạng của ISO" mà ghi rõ
+  WinPE đã inject được đóng gói lại thành WIM một ảnh
+  bootable ở bước trên. Cộng 1 dòng [Cơ chế] mới ở mốc 69%
+  giải thích cơ chế này.
+- **Vì sao lần xuất lại của v0.7.7 không cứu được:** bản đó
+  export theo quy ước vị trí "index 2 là WinPE" — tức xuất
+  nhầm ẢNH SETUP (sau này v0.7.8 mới phát hiện index 1 mới là
+  PE và sửa chọn index theo tên), và /Bootable theo tài liệu
+  DISM chỉ có tác dụng trên ảnh WinPE thật; cộng thêm cổng
+  kiểm chứng đọc chữ DISM phán sai. Lần này export đúng index
+  PE ĐÃ INJECT (theo probe) và không phán quyết gì thêm.
+- **Tài liệu:** tab "Tài liệu" mục 2 (thêm đoạn đóng gói lại)
+  + mục 9 (bỏ câu "nguyên trạng", ghi rõ đóng gói cơ học từ
+  v0.7.15); `docs/co_che_v0.7.15.md` = bản sao của
+  co_che_v0.7.13.md + các thay đổi trên (đã đối chiếu thân
+  tài liệu khớp từng chữ với TAI_LIEU_TEXT; tiện thể đồng bộ
+  mục 4 của file này với thay đổi inject QSU-DriverBackup
+  của v0.7.14 mà bản v0.7.13 còn thiếu); README_FULL §4.5
+  (thêm mốc 69%, sửa dòng 71%), §4.7 (thêm đoạn "Đóng gói
+  lại một ảnh") và bảng lịch sử phiên bản; HUONG-DAN.txt có
+  mục v0.7.15 + 2 ca test ưu tiên (đầu bảng: lặp lại đúng
+  kịch bản log 17:46 — DESKTOP-704R89L, ISO mod, wipe →
+  reboot phải vào engine của tool, KHÔNG được lên Windows
+  Setup; ca 2: ISO Client gốc).
+- Gói: `~/workspace/UtilityRebuild-v0.7.15.zip` (9.980.182
+  byte, 16 file, testzip sạch; drop_v0.7.15 = drop_v0.7.14 +
+  wizard `CaiDatWinTuDong.exe` build lại 3.028.061 byte, md5
+  `4d7a21c7…` + HUONG-DAN.txt cập nhật — 12 file còn lại,
+  gồm engine WinPEInstall.exe, byte-identical với v0.7.14,
+  đã đối chứng md5 từng file trong zip khớp bản trong drop).
+  Build release sạch (0 lỗi, 0 cảnh báo). **Chưa test trên
+  máy thật** — ca test quyết định là ca 1 trong HUONG-DAN.
+
 ## Khác biệt có chủ đích so với bản gốc
 
 - Không cổng key bản quyền, không biến môi trường "token" khóa module.

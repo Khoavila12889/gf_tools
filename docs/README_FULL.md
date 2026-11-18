@@ -943,7 +943,8 @@ vào WinPE. Các mốc phần trăm là cố định trong code:
 | 56% | Xử lý `winpe.wim`: ưu tiên `settings.winpeWimPath` nếu có, không thì lấy `sources\boot.wim` của ISO; thiếu file là **lỗi cứng dừng staging**. Gỡ chỉ-đọc (`clear_readonly_file()`) |
 | — | `probe_winpe_wim()`: đọc `/Get-WimInfo`, chọn index WinPE theo quy tắc mục 4.7, ghi log toàn bộ thông tin các index |
 | — | `mount_inject_winpe()`: DISM mount WIM → tiêm file khởi động + `WinPEInstall.exe` vào `System32` (mục 4.7) → unmount `/Commit`. Nếu mount lỗi (điển hình 0xC1510111 do WIM còn cờ chỉ-đọc): tự thử lại bằng đường **export** (`/Export-Image /Compress:Max /Bootable`) sang file mới, probe lại, mount lại, rồi đổi tên đè lên `winpe.wim` |
-| 71% | Dòng log cố định ghi rõ **cổng kiểm chứng cờ bootable đã bị gỡ** (từ v0.7.11) — WIM được dùng nguyên trạng của ISO |
+| 69% | `repack_winpe_single_image()` (từ v0.7.15, **vô điều kiện** mọi ca cài mới): xuất riêng index đã inject sang `winpe_single.wim` bằng `/Export-Image /Bootable /Compress:Max`, xoá bản hai-ảnh, đổi tên thành `winpe.wim` (mục 4.7). Export lỗi hoặc file đích rỗng → **dừng trước BCD** |
+| 71% | Dòng log cố định ghi rõ **cổng kiểm chứng cờ bootable đã bị gỡ** (từ v0.7.11) — wizard không phán cờ boot bằng output DISM; từ v0.7.15 WIM không còn dùng nguyên trạng mà đã đóng gói lại một ảnh ở mốc 69% |
 | 74% | Chép driver lưu trữ vào `staging\Drivers`: từ `settings.storageDriversPath`, hoặc thư mục `drivers` cạnh wizard nếu settings để trống |
 | 78% | Ghi `autounattend.xml` (mục 4.9) vào staging |
 | 84% | `register_bcd()` đăng ký BCD (mục 4.7), sau đó `verify_bcd()` đối chiếu chẩn đoán (chỉ ghi log) |
@@ -1029,6 +1030,34 @@ ba file có nội dung từ `qsu_start_cmd()` — `qsu_start.cmd` và
 chạy `wpeinit` → quét các ổ C:–Z: tìm `\<stagingFolder>\WinPEInstall.exe`,
 chạy nó với tham số là tên thư mục staging → không thấy thì chạy
 bản trong `System32` → cuối cùng `wpeutil reboot`.
+
+**Đóng gói lại một ảnh** (`repack_winpe_single_image()`, từ
+v0.7.15): ngay sau khi tiêm xong và **trước mọi bước BCD**, wizard
+xuất riêng index đã inject sang `winpe_single.wim`:
+
+```
+dism /English /Export-Image /SourceImageFile:<staging>\winpe.wim
+     /SourceIndex:<index đã inject>
+     /DestinationImageFile:<staging>\winpe_single.wim
+     /Bootable /Compress:Max
+```
+
+rồi xoá `winpe.wim` hai-ảnh và đổi tên bản một-ảnh thành
+`winpe.wim` (gỡ cờ chỉ-đọc sau đổi tên, log kích thước mới).
+Nguyên nhân: `winpe.wim` sau tiêm vẫn mang **cả hai ảnh** của
+`boot.wim` gốc và header của nó không chỉ định ảnh PE đã inject
+là ảnh boot — ca thực địa 2026-11-17 (log
+`install-20261117-1746.log`: probe chọn index 1 theo tên lúc
+17:48:47, tiêm xong 17:48:59, BCD đăng ký 17:49:19) cho thấy
+winload đã nạp ảnh **Windows Setup** thay vì ảnh PE, máy lên
+thẳng Setup đòi media driver. WIM một ảnh mang cờ boot thì
+winload chỉ có thể khởi động đúng engine — cùng nguyên tắc
+đóng gói lại của tool gốc. Bước này áp dụng **vô điều kiện**
+(ISO mod hay gốc, mọi index đã chọn) và là bước đóng gói thuần
+tuý: **không** đọc/phán cờ bootable từ output DISM (cổng kiểm
+chứng của v0.7.7 vẫn gỡ hẳn); chỉ khi chính lệnh export trả mã
+khác 0, hoặc file đích không tồn tại/rỗng, wizard mới dừng —
+dừng **trước** đăng ký BCD nên máy chưa có mục boot mới nào.
 
 **Đăng ký BCD** (`register_bcd()`) — công thức cố định:
 
@@ -1500,6 +1529,7 @@ Mỗi phiên bản một dòng, theo `BUILD_NOTES.md` và các gói phát hành
 | v0.7.12 | 2026-11-17 | Thêm tab Hướng dẫn + Tài liệu (tổng 4 tab) và 9 dòng `[Cơ chế]` giải thích trong log cài đặt; logic cài đặt không đổi so với v0.7.11. |
 | v0.7.13 | 2026-11-17 | Chế độ phân vùng **rebuild** cho máy 1 đĩa (giữ phân vùng dữ liệu, `stage.json` thêm `rebuildPartitions`, engine thêm mã thoát 13); rà soát phát hiện lỗi hằng số checkbox `0x400` ở các module cũ và lỗi driver sao lưu không tới được engine. |
 | v0.7.14 | 2026-11-17 | Sửa hai lỗi trên: hằng số checkbox `0x400` → `0x4` ở 4 module (Tuỳ Chỉnh Windows, Dọn Rác, Backup/Restore Driver, Sao Lưu Wifi); engine inject thêm driver đã sao lưu từ `QSU-DriverBackup` trên ổ Data (đọc `driverBackupRel`, kiểm tra tên tương đối an toàn). |
+| v0.7.15 | 2026-11-18 | **Đóng gói lại WinPE thành WIM một ảnh bootable** trong wizard (`repack_winpe_single_image()`, mốc 69%): sau khi inject, xuất riêng index đã inject bằng `/Export-Image /Bootable /Compress:Max` rồi thay `winpe.wim` — sửa ca thực địa 2026-11-17 winload nạp nhầm ảnh Windows Setup vì WIM hai-ảnh không có Boot Index chỉ định ảnh PE. Không khôi phục cổng kiểm chứng DISM-text đã gỡ ở v0.7.11. |
 
 ---
 
