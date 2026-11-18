@@ -7,6 +7,7 @@
 pub mod cmd;
 pub mod disk;
 pub mod http;
+pub mod iso;
 pub mod json;
 pub mod log;
 pub mod settings;

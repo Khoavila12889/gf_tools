@@ -1406,6 +1406,256 @@ pub fn ensure_boot_letter(
     ))
 }
 
+// ---------------------------------------------------------------------------
+// CHỐT BOOT CHO CÀI THEO PHÂN VÙNG (preserve) — v0.7.19
+//
+// Bối cảnh thực địa (2026-11-18, DESKTOP-704R89L, WinPE USB
+// BHT/Anhdv): CaiDatWinWinPE bung ảnh gốc đạt 100% lên phân vùng
+// C: có sẵn, nhưng bước bcdboot THẤT BẠI — kỹ thuật viên phải tự
+// gán ký tự S: cho phân vùng EFI bằng diskpart rồi chạy bcdboot
+// tay mới boot được. Nguyên nhân nằm ở hàm find_efi_letter() (bản
+// sao độc lập ở cả engine lẫn module WinPE — rủi ro R1 trong tài
+// liệu rà soát UEFI): nó chỉ quét các ổ ĐÃ CÓ ký tự để tìm thư
+// mục \EFI ở gốc, không thấy thì mountvol /s. Phân vùng EFI của
+// SSD hôm đó KHÔNG có ký tự ổ → vô hình với cách tìm đó;
+// mountvol /s lại không phân biệt đĩa (máy có HAI phân vùng EFI,
+// mỗi đĩa một cái) và có thể trỏ nhầm đĩa. Đường tự gán ký tự
+// ensure_boot_letter của v0.7.16 chỉ được nối vào wipe/rebuild,
+// không vào đường preserve — đúng đường vừa gãy.
+//
+// finalize_boot() là đường chốt boot DÙNG CHUNG cho mọi ca cài
+// theo phân vùng (engine preserve + module WinPE theo phân
+// vùng): định vị phân vùng boot TRÊN CÙNG ĐĨA VẬT LÝ với phân
+// vùng Windows đích bằng liệt kê IOCTL của chính crate này
+// (GPT: loại phân vùng EFI System theo GUID; MBR: System
+// Reserved có cờ active, không có thì chính phân vùng Windows),
+// thiếu ký tự thì tự gán bằng ensure_boot_letter, chạy bcdboot
+// thu trọn output, và chỉ tính là thành công khi KIỂM CHỨNG
+// ĐƯỢC file boot thật trên phân vùng boot — mã thoát 0 của
+// bcdboot chưa đủ. Thất bại lần đầu thì chạy lại một lần; thất
+// bại hẳn thì Err mang theo output của bcdboot để hộp thoại/log
+// đọc được đúng lý do. KHÔNG tồn tại đường nào bỏ qua bước boot
+// lặng lẽ.
+// ---------------------------------------------------------------------------
+
+/// Kết quả chốt boot thành công cho ca cài theo phân vùng.
+#[derive(Debug, Clone)]
+pub struct BootFinalize {
+    /// Ký tự ổ đã chốt của phân vùng boot (bcdboot đã trỏ vào đây).
+    pub boot_letter: char,
+    /// Số đĩa vật lý chứa cả phân vùng Windows lẫn phân vùng boot.
+    pub disk_number: u32,
+    /// Số phân vùng (PartitionNumber) của phân vùng boot trên đĩa.
+    pub boot_partition_number: u32,
+    /// true khi chạy theo nhánh UEFI/GPT (/f UEFI).
+    pub uefi: bool,
+    /// true khi phân vùng boot CHÍNH LÀ phân vùng Windows (MBR
+    /// không có System Reserved riêng — boot files nằm trên ổ
+    /// Windows, phân vùng đó phải đang active mới boot được).
+    pub self_boot: bool,
+}
+
+/// Kiểm chứng file boot THẬT trên phân vùng boot sau bcdboot:
+/// UEFI cần bootmgfw.efi + kho BCD dưới EFI\Microsoft\Boot;
+/// BIOS cần bootmgr + Boot\BCD. Trả về danh sách file còn thiếu
+/// (rỗng = đạt).
+fn verify_boot_files(boot_letter: char, uefi: bool) -> Vec<String> {
+    let root = format!("{}:\\", boot_letter);
+    let need: Vec<String> = if uefi {
+        vec![
+            format!("{}EFI\\Microsoft\\Boot\\bootmgfw.efi", root),
+            format!("{}EFI\\Microsoft\\Boot\\BCD", root),
+        ]
+    } else {
+        vec![format!("{}bootmgr", root), format!("{}Boot\\BCD", root)]
+    };
+    need.into_iter()
+        .filter(|p| !std::path::Path::new(p).exists())
+        .collect()
+}
+
+/// Gộp output của một lần chạy bcdboot thành đoạn lỗi đọc được
+/// cho hộp thoại (giữ phần cuối, tối đa ~800 ký tự — bcdboot in
+/// ngắn, lỗi luôn nằm ở cuối).
+fn bcdboot_output_text(out: &cmd::CmdOut) -> String {
+    let mut detail = out.stdout.trim().to_string();
+    let err = out.stderr.trim();
+    if !err.is_empty() {
+        if !detail.is_empty() {
+            detail.push_str(" | ");
+        }
+        detail.push_str(err);
+    }
+    let chars: Vec<char> = detail.chars().collect();
+    if chars.len() > 800 {
+        detail = chars[chars.len() - 800..].iter().collect();
+    }
+    if detail.is_empty() {
+        detail = "(bcdboot không in thêm chi tiết nào)".to_string();
+    }
+    detail
+}
+
+/// Chốt boot cho ca cài THEO PHÂN VÙNG: xem khối chú thích ở
+/// trên. `windows_letter` là ký tự ổ của phân vùng Windows VỪA
+/// bung ảnh xong; `uefi` là chế độ firmware của ca cài.
+pub fn finalize_boot(
+    log: &Arc<Logger>,
+    windows_letter: char,
+    uefi: bool,
+) -> Result<BootFinalize, String> {
+    log.line("[Cơ chế] Chốt boot (v0.7.19): phân vùng boot được tìm TRÊN CÙNG ĐĨA VẬT LÝ với phân vùng Windows đích — GPT theo GUID loại phân vùng EFI System, MBR theo System Reserved đang active — thiếu ký tự ổ thì tự gán bằng cơ chế tự chữa của v0.7.16; bcdboot chỉ được tính là xong khi kiểm chứng được file boot thật trên phân vùng boot, và lỗi (nếu có) mang theo nguyên văn output của bcdboot.");
+    let disk_number = volume_disk_number(windows_letter).ok_or_else(|| {
+        format!(
+            "không xác định được phân vùng Windows {}: nằm trên đĩa vật lý nào — không chốt boot mò được. Dừng.",
+            windows_letter
+        )
+    })?;
+    let enumeration = enumerate_disks();
+    for line in &enumeration.diag {
+        log.line(&format!("  [liệt kê trước chốt boot] {}", line));
+    }
+    let disk = enumeration
+        .disks
+        .iter()
+        .find(|d| d.number == disk_number)
+        .ok_or_else(|| {
+            format!(
+                "không liệt kê lại được đĩa {} (đĩa chứa phân vùng Windows {}:) tại bước chốt boot. Dừng.",
+                disk_number, windows_letter
+            )
+        })?;
+    log.line(&format!(
+        "Đĩa của phân vùng Windows {}:: {}",
+        windows_letter,
+        disk.summary()
+    ));
+
+    // --- Định vị phân vùng boot TRÊN CHÍNH ĐĨA NÀY ---
+    let mut self_boot = false;
+    let boot_part: DiskPartition = if uefi {
+        match disk.partitions.iter().find(|p| p.kind == PartKind::Efi) {
+            Some(p) => p.clone(),
+            None => {
+                return Err(format!(
+                    "không tìm thấy phân vùng EFI System (GUID loại C12A7328-F81F-11D2-BA4B-00A0C93EC93B) trên đĩa {} — đĩa chứa phân vùng Windows {}:. Layout trên đĩa:\n{}",
+                    disk_number,
+                    windows_letter,
+                    disk.describe_partitions()
+                ))
+            }
+        }
+    } else {
+        match disk.partitions.iter().find(|p| p.kind == PartKind::System) {
+            Some(p) => p.clone(),
+            None => match disk.partitions.iter().find(|p| p.letter == Some(windows_letter)) {
+                Some(p) => {
+                    self_boot = true;
+                    log.line(
+                        "Đĩa đích không có phân vùng System Reserved riêng — bcdboot sẽ trỏ vào CHÍNH phân vùng Windows (phân vùng này phải đang active mới boot được).",
+                    );
+                    p.clone()
+                }
+                None => {
+                    return Err(format!(
+                        "không tìm thấy phân vùng System Reserved (active) lẫn chính phân vùng Windows {}: trong liệt kê của đĩa {}. Layout trên đĩa:\n{}",
+                        windows_letter,
+                        disk_number,
+                        disk.describe_partitions()
+                    ))
+                }
+            },
+        }
+    };
+    log.line(&format!(
+        "Phân vùng boot trên đĩa {}: phân vùng #{} — {} — {} — ký tự theo liệt kê: {}",
+        disk_number,
+        boot_part.number,
+        boot_part.kind.label_vi(),
+        sys::format_gb(boot_part.size),
+        boot_part
+            .letter
+            .map(|c| format!("{}:", c))
+            .unwrap_or_else(|| "(chưa có)".to_string())
+    ));
+
+    // --- Bảo đảm ký tự ổ dùng được cho phân vùng boot ---
+    let boot_letter = if self_boot {
+        windows_letter
+    } else {
+        let idx = disk
+            .partitions
+            .iter()
+            .position(|p| p.number == boot_part.number && p.offset == boot_part.offset)
+            .unwrap_or(0);
+        let ordinal = if boot_part.number > 0 { boot_part.number } else { idx as u32 + 1 };
+        ensure_boot_letter(log, disk_number, &boot_part, ordinal, 'S', &[windows_letter])
+            .map_err(|e| format!("chốt boot: {}", e))?
+    };
+
+    // --- Chạy bcdboot (thu trọn output) + kiểm chứng file thật ---
+    let bcdboot_path = std::path::Path::new(&format!(
+        "{}:\\Windows\\System32\\bcdboot.exe",
+        windows_letter
+    ))
+    .to_path_buf();
+    let bcdboot_s = if bcdboot_path.exists() {
+        bcdboot_path.to_string_lossy().into_owned()
+    } else {
+        "bcdboot".to_string()
+    };
+    let win_arg = format!("{}:\\Windows", windows_letter);
+    let s_arg = format!("{}:", boot_letter);
+    let fw = if uefi { "UEFI" } else { "BIOS" };
+    let mut last_detail = String::new();
+    for attempt in 1..=2u32 {
+        if attempt > 1 {
+            log.line("Chốt boot: lần chạy bcdboot trước chưa đạt (mã thoát hoặc thiếu file boot) — chạy lại một lần.");
+        }
+        let out = cmd::run_logged(log, &bcdboot_s, &[&win_arg, "/s", &s_arg, "/f", fw])
+            .map_err(|e| format!("không chạy được bcdboot: {}", e))?;
+        let missing = verify_boot_files(boot_letter, uefi);
+        if out.code == Some(0) && missing.is_empty() {
+            log.line(&format!(
+                "[Cơ chế] Chốt boot xong: đĩa {} — phân vùng boot #{} = {}: — bcdboot /f {} đạt, đã kiểm chứng file boot thật trên {}: ({}).",
+                disk_number,
+                boot_part.number,
+                boot_letter,
+                fw,
+                boot_letter,
+                if uefi {
+                    "EFI\\Microsoft\\Boot\\bootmgfw.efi + BCD"
+                } else {
+                    "bootmgr + Boot\\BCD"
+                }
+            ));
+            return Ok(BootFinalize {
+                boot_letter,
+                disk_number,
+                boot_partition_number: boot_part.number,
+                uefi,
+                self_boot,
+            });
+        }
+        last_detail = format!(
+            "bcdboot trả mã {:?}; kiểm chứng trên {}: còn thiếu: {} — output bcdboot: {}",
+            out.code,
+            boot_letter,
+            if missing.is_empty() {
+                "(không thiếu file nào — mã thoát là vấn đề)".to_string()
+            } else {
+                missing.join(", ")
+            },
+            bcdboot_output_text(&out)
+        );
+        log.line(&format!("Chốt boot lần {} chưa đạt: {}", attempt, last_detail));
+    }
+    Err(format!(
+        "bcdboot thất bại sau 2 lần chạy (đích boot: phân vùng #{} trên đĩa {}, ký tự {}:). {}",
+        boot_part.number, disk_number, boot_letter, last_detail
+    ))
+}
+
 /// Kết quả sau wipe/rebuild: ký tự ổ THẬT của các phân vùng mới
 /// trên đĩa đích — phân vùng Windows/Recovery xác minh bằng liệt
 /// kê, phân vùng boot chốt bằng probe đường dẫn thật sau khi tự

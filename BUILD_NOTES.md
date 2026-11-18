@@ -1590,6 +1590,107 @@ reboot vào WinPE để engine cài thật.
   máy thật** — ca test quyết định là ca ưu tiên trong
   HUONG-DAN.
 
+## v0.7.19 — Chốt boot cùng đĩa cho đường preserve + module WinPE tự mount ISO / trình duyệt file tích hợp / chống kẹt nút + dọn cờ đổi mật khẩu trong autounattend (2026-11-18)
+
+- **Bằng chứng thực địa (buổi test 2026-11-18, DESKTOP-704R89L,
+  WinPE USB BHT/Anhdv):** v0.7.18 chạy ca wipe trọn vẹn (màn hình
+  tiến trình hoạt động, bung ảnh xong, boot vào Windows mới) —
+  nhưng Windows MỚI (bản mod) xanh màn hình CRITICAL_PROCESS_DIED;
+  ca đối chứng bằng ISO gốc qua module `CaiDatWinWinPE` (cài theo
+  phân vùng lên C:) phơi ra 4 lỗi của chính module/đường preserve:
+  (1) DISM bung ảnh 100% nhưng bước **bcdboot thất bại** với thông
+  báo chung chung — kỹ thuật viên phải tự gán ký tự S: cho phân
+  vùng EFI của SSD rồi chạy `bcdboot C:\Windows /s S: /f UEFI`
+  bằng tay mới boot được ("Boot files successfully created" →
+  Windows vào "Getting ready"); (2) chọn file ISO bị ngõ cụt
+  "WinPE này không có PowerShell/cmdlet Storage nên không mount
+  được ISO"; (3) nút "Chọn file..." không mở được cửa sổ nào (hộp
+  thoại file của Windows chết lặng trong WinPE này) và sau một
+  lần nạp nguồn lỗi, nút "Nạp nguồn" **kẹt khoá cứng** ("Không
+  cho bấm nạp") phải đóng mở lại module; (4) ca ISO gốc cài xong
+  thì lần boot đầu dừng ở **màn hình bắt đổi mật khẩu** thay vì
+  AutoLogon vào desktop.
+- **Bản sửa 1 (chốt boot):** thêm `disk::finalize_boot()` vào
+  `qsu_common::disk` và nối vào CẢ HAI đường preserve
+  (CaiDatWinWinPE theo phân vùng + engine WinPEInstall
+  preserve); hai bản sao `find_efi_letter()` bị xoá. Gốc lỗi:
+  hàm cũ chỉ quét các ổ ĐÃ CÓ ký tự tìm thư mục `\EFI` ở gốc rồi
+  dự phòng `mountvol /s` — EFI của SSD hôm đó không có ký tự
+  (vô hình), mountvol /s không phân biệt đĩa (máy có 2 EFI, mỗi
+  đĩa một cái — cũng là rủi ro R1 của rà soát UEFI), đường tự
+  gán ký tự `ensure_boot_letter` của v0.7.16 chỉ nối vào
+  wipe/rebuild, và lỗi hiện ra là chuỗi cố định không kèm
+  output của bcdboot. Helper mới: `volume_disk_number` → liệt
+  kê IOCTL của crate → phân vùng boot TRÊN CÙNG ĐĨA (GPT:
+  `PartKind::Efi`; MBR: `PartKind::System`, không có thì chính
+  phân vùng Windows) → `ensure_boot_letter` (ưu tiên S, loại
+  trừ ký tự ổ Windows) → `bcdboot /f UEFI|BIOS` thu trọn
+  output → **kiểm chứng file thật** (`EFI\Microsoft\Boot\
+  bootmgfw.efi` + `BCD`, hoặc `bootmgr` + `Boot\BCD`) →
+  thử lại 1 lần → Err mang theo output của bcdboot vào hộp
+  thoại. Wipe/rebuild giữ nguyên đường riêng (đã đúng ở
+  thực địa v0.7.18). Dòng `[Cơ chế]` mô tả cơ chế mới ghi ở
+  đầu helper.
+- **Bản sửa 2 (mount ISO):** module mới `qsu_common::iso` —
+  port VirtDisk FFI của lớp 3 wizard (v0.7.17) thành đường
+  mount DÙNG CHUNG: sổ đăng ký mount trong tiến trình,
+  OpenVirtualDisk + AttachVirtualDisk READ_ONLY|
+  PERMANENT_LIFETIME, dò ký tự bằng hiệu tập volume (ưu
+  tiên ổ CDROM có `sources\install.*`), gỡ đối xứng bằng
+  DetachVirtualDisk khi đổi nguồn/đóng module. Module
+  WinPE bỏ hẳn `powershell_available()`/`Mount-DiskImage`;
+  lỗi attach trả thông điệp dự phòng rõ ràng (mount sẵn
+  bằng công cụ của WinPE rồi chọn/gõ thẳng
+  `F:\sources\install.wim` — đường đã cứu ca thực địa).
+  Wizard giữ nguyên bộ ba lớp của nó.
+- **Bản sửa 3 (chọn file + kẹt nút):** trình duyệt file
+  TÍCH HỢP trong CaiDatWinWinPE — cửa sổ Win32 thứ hai của
+  module (full_bind_event_handler riêng): danh sách mọi ổ
+  đĩa (GetLogicalDriveStringsW + nhãn + loại), duyệt thư
+  mục bằng read_dir, lọc *.iso/*.wim/*.esd/*.swm, hiện tên
+  file ĐẦY ĐỦ, nhấp đúp/nút Chọn trả đường dẫn nguyên văn
+  vào ô nguồn rồi nạp luôn; chế độ thứ hai chọn thư mục
+  cho nút "Duyệt..." driver. Cả hai call site
+  `nwg::FileDialog` bị gỡ. Ô gõ đường dẫn giữ nguyên.
+  Chống kẹt nút: `spawn_load_source`/`spawn_enumerate`
+  bọc `catch_unwind` — panic cũng thành kết quả Err,
+  `busy` luôn được nhả + notice luôn được gửi; `refresh()`
+  trì hoãn mọi hộp thoại modal xuống SAU `set_busy_ui()`
+  (và đồng bộ lại sau khi hộp thoại đóng) — nút chỉ khoá
+  khi thao tác thật sự đang chạy.
+- **Bản sửa 4 (cờ đổi mật khẩu):** `build_unattend()` ở CẢ
+  wizard và module WinPE (hai bản sao độc lập — qsu_common
+  không có bản chung) nay sinh `<FirstLogonCommands>` với
+  hai SynchronousCommand: `net user <Admin> /logonpasswordchg:no`
+  (Order 1) và PowerShell `Set-LocalUser -PasswordNeverExpires
+  $true` (Order 2) — dọn cờ pwdLastSet=0 mà Setup gắn cho
+  tài khoản tạo từ unattend. Áp dụng cả khi mật khẩu trống
+  lẫn có đặt. Mỗi nơi sinh đều ghi dòng `[Cơ chế]` (wizard
+  ở bước staging 78%, module ở Bước 4 của spawn_install).
+  Đây là lệnh dọn cờ cho chính tài khoản vừa tạo — KHÔNG
+  phải lệnh cài ứng dụng hậu cài.
+- **Tài liệu:** tab "Tài liệu" của wizard thêm mục 12;
+  `docs/co_che_v0.7.19.md` = header của bản v0.7.18 + đoạn
+  delta v0.7.19 + thân TAI_LIEU_TEXT mới (đã đối chiếu
+  khớp từng chữ bằng script); README_FULL §3.4 (công nghệ,
+  cơ chế, hàm chính, checklist, trạng thái thực địa), §4.11
+  bước 10, §5.5 (R1 ĐÃ ĐÓNG) + dòng lịch sử v0.7.19;
+  HUONG-DAN.txt có mục v0.7.19 + 4 ca test ưu tiên (lặp
+  lại đúng buổi test: chọn ISO bằng trình duyệt tích hợp
+  → tự mount → cài theo phân vùng → bcdboot tự qua → vào
+  thẳng desktop không hỏi đổi mật khẩu).
+- Gói: `~/workspace/UtilityRebuild-v0.7.19.zip`;
+  drop_v0.7.19 = drop_v0.7.18 + 3 exe build lại
+  (`CaiDatWinWinPE.exe`, `WinPEInstall.exe`,
+  `CaiDatWinTuDong.exe`) + HUONG-DAN.txt cập nhật; 8 file
+  còn lại byte-identical với v0.7.18 (nguồn của chúng
+  không đổi; build toàn workspace cho md5 khác chỉ vì
+  thư viện dùng chung thay đổi — gói giữ binary v0.7.18
+  cho các module không đổi theo đúng quy ước các bản
+  trước). Build release sạch (0 lỗi, 0 cảnh báo).
+  **Chưa test trên máy thật** — ca test quyết định là 4
+  ca ưu tiên trong HUONG-DAN.
+
 ## Khác biệt có chủ đích so với bản gốc
 
 - Không cổng key bản quyền, không biến môi trường "token" khóa module.

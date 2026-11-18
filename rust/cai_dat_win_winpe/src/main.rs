@@ -46,6 +46,34 @@
 //!   không mật khẩu (unattend bỏ hẳn phần tử <Password>); có đặt
 //!   thì mật khẩu chỉ nằm trong autounattend.xml, KHÔNG bao giờ
 //!   ghi vào log.
+//!
+//! v0.7.19 (sửa ba lỗi thực địa 2026-11-18 + một lỗi hậu boot):
+//! - CHỐT BOOT: đường cài theo phân vùng dùng chung
+//!   `disk::finalize_boot()` của qsu_common — tìm phân vùng boot
+//!   TRÊN CÙNG ĐĨA với phân vùng Windows (GPT: EFI System theo
+//!   GUID; MBR: System Reserved active), tự gán ký tự nếu thiếu,
+//!   bcdboot + kiểm chứng file boot thật, lỗi kèm output của
+//!   bcdboot. Thay hẳn `find_efi_letter()` cũ (quét thư mục \EFI
+//!   theo ký tự ổ + mountvol /s) — ca thực địa: bung ảnh 100%
+//!   nhưng bcdboot thất bại vì EFI của SSD không có ký tự ổ, kỹ
+//!   thuật viên phải chạy bcdboot tay.
+//! - NGUỒN ISO: mount bằng VirtDisk API gốc qua
+//!   `qsu_common::iso` — KHÔNG còn phụ thuộc PowerShell/cmdlet
+//!   Storage (WinPE BHT/Anhdv không có, bản cũ báo ngõ cụt).
+//!   Nút "Chọn file..."/"Duyệt..." mở TRÌNH DUYỆT FILE TÍCH
+//!   HỢP của module (hộp thoại file của Windows không mở được
+//!   trong các WinPE này); ô gõ đường dẫn trực tiếp giữ nguyên.
+//! - NÚT BẤM: luồng nền nạp nguồn/liệt kê được bọc bắt lỗi toàn
+//!   diện — busy LUÔN được nhả và giao diện LUÔN quay lại trạng
+//!   thái bấm được sau mọi kết quả nạp (bản cũ từng kẹt nút
+//!   "Nạp nguồn" sau một lần nạp lỗi, phải mở lại module); hộp
+//!   thoại trong refresh() chỉ hiện SAU khi đã cập nhật trạng
+//!   thái nút.
+//! - AUTOUNATTEND: thêm hai lệnh FirstLogonCommands dọn cờ
+//!   "phải đổi mật khẩu ở lần đăng nhập đầu" của tài khoản
+//!   admin (net user /logonpasswordchg:no + PasswordNeverExpires)
+//!   — ca thực địa: AutoLogon bị chặn ở màn hình đổi mật khẩu
+//!   thay vì vào thẳng desktop. Áp dụng cả khi mật khẩu trống.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -65,7 +93,7 @@ use winapi::shared::windef::{HWND, RECT};
 use winapi::um::fileapi::{
     GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDriveStringsW, GetVolumeInformationW,
 };
-use winapi::um::winbase::{DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOVABLE};
+use winapi::um::winbase::{DRIVE_CDROM, DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOTE, DRIVE_REMOVABLE};
 use winapi::um::winnt::KEY_READ;
 use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW};
 use winapi::um::winuser::{
@@ -502,47 +530,17 @@ fn load_editions(wim: &Path) -> Result<Vec<EditionInfo>, String> {
 }
 
 // ---------------------------------------------------------------------------
-// Mount ISO (PowerShell Mount-DiskImage — cùng cơ chế wizard)
+// Mount ISO — VirtDisk API gốc qua qsu_common::iso (v0.7.19)
 // ---------------------------------------------------------------------------
-fn powershell_available() -> bool {
-    cmd::run_capture("powershell", &["-NoProfile", "-Command", "exit 0"])
-        .map(|o| o.code == Some(0))
-        .unwrap_or(false)
-}
-
-fn mount_iso(iso: &Path) -> Result<char, String> {
-    let path_s = iso.to_string_lossy().replace('\'', "''");
-    let script = format!(
-        "$v = Mount-DiskImage -ImagePath '{}' -PassThru | Get-Volume; if ($v) {{ $v.DriveLetter }}",
-        path_s
-    );
-    let out = cmd::run_capture(
-        "powershell",
-        &["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script],
-    )
-    .map_err(|e| format!("không chạy được PowerShell: {}", e))?;
-    out.stdout
-        .trim()
-        .chars()
-        .find(|c| c.is_ascii_alphabetic())
-        .map(|c| c.to_ascii_uppercase())
-        .ok_or_else(|| {
-            format!(
-                "Mount-DiskImage không trả ký tự ổ đĩa (output: {} {})",
-                out.stdout.trim(),
-                out.stderr.trim()
-            )
-        })
-}
-
-fn dismount_iso(iso: &Path) {
-    let path_s = iso.to_string_lossy().replace('\'', "''");
-    let script = format!("Dismount-DiskImage -ImagePath '{}' -ErrorAction SilentlyContinue", path_s);
-    let _ = cmd::run_capture(
-        "powershell",
-        &["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script],
-    );
-}
+// Các bản trước mount bằng PowerShell Mount-DiskImage và khi
+// WinPE không có PowerShell (BHT/Anhdv đều vậy) thì báo ngõ cụt
+// "WinPE này không có PowerShell/cmdlet Storage nên không mount
+// được ISO" — thực địa 2026-11-18. Từ v0.7.19 mount/dismount đi
+// thẳng xuống VirtDisk API trong thư viện dùng chung (sổ đăng
+// ký mount + gỡ đối xứng bằng DetachVirtualDisk); lỗi attach
+// mang sẵn hướng dẫn dự phòng (mount sẵn bằng công cụ của
+// WinPE rồi chọn/gõ thẳng sources\install.*).
+use qsu_common::iso::{dismount_iso, mount_iso};
 
 /// Tìm file image trong ISO đã mount: install.wim / .esd / .swm
 fn find_image_file(mounted_letter: char) -> Option<PathBuf> {
@@ -577,6 +575,13 @@ fn swm_pattern_for(image: &Path) -> Option<String> {
 // LocalAccount lẫn AutoLogon (cấu trúc Schneegans — AutoLogon không
 // mật khẩu được Setup hỗ trợ; KHÔNG sinh <Value> rỗng). Khi có mật
 // khẩu, mật khẩu chỉ xuất hiện tại đây và không vào log.
+// FirstLogonCommands (v0.7.19) chỉ chứa hai lệnh DỌN CỜ MẬT KHẨU
+// cho chính tài khoản admin vừa tạo (không phải lệnh cài ứng
+// dụng): `net user <tên> /logonpasswordchg:no` dọn cờ "phải đổi
+// mật khẩu ở lần đăng nhập đầu" (pwdLastSet = 0) mà Setup gắn
+// cho tài khoản tạo từ unattend — cờ này chặn AutoLogon ở màn
+// hình đổi mật khẩu (thực địa 2026-11-18); lệnh PowerShell đặt
+// PasswordNeverExpires cho tài khoản.
 // ---------------------------------------------------------------------------
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -608,6 +613,28 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
             pass
         )
     };
+    // Lệnh chạy ở lần đăng nhập đầu (v0.7.19, cùng bản sửa với
+    // wizard): tài khoản Setup tạo từ unattend mang cờ "phải
+    // đổi mật khẩu ở lần đăng nhập đầu tiên" (pwdLastSet = 0)
+    // — thực địa 2026-11-18: AutoLogon bị chặn ở màn hình đổi
+    // mật khẩu thay vì vào thẳng desktop. Hai lệnh này dọn cờ
+    // đó + đặt mật khẩu không hết hạn, áp dụng CẢ khi mật khẩu
+    // để trống lẫn khi có đặt.
+    let fl_commands = format!(
+        r#"        <SynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <CommandLine>net user {user} /logonpasswordchg:no</CommandLine>
+          <Description>Không bắt đổi mật khẩu ở lần đăng nhập đầu tiên</Description>
+          <RequiresUserInput>false</RequiresUserInput>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Set-LocalUser -Name '{user}' -PasswordNeverExpires $true"</CommandLine>
+          <Description>Mật khẩu tài khoản admin không hết hạn</Description>
+          <RequiresUserInput>false</RequiresUserInput>
+        </SynchronousCommand>"#,
+        user = user
+    );
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
@@ -652,6 +679,7 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
         <LogonCount>1</LogonCount>
       </AutoLogon>
       <FirstLogonCommands>
+{flc}
       </FirstLogonCommands>
     </component>
   </settings>
@@ -663,6 +691,7 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
         tz = xml_escape(&st.timezone),
         comp = comp,
         user = user,
+        flc = fl_commands,
     )
 }
 
@@ -689,26 +718,13 @@ fn format_partition(log: &Arc<Logger>, letter: char) -> bool {
     }
 }
 
-/// Tìm phân vùng EFI (FAT32, có thư mục EFI) hoặc gán ký tự bằng mountvol /s
-fn find_efi_letter() -> Option<char> {
-    let drives = sys::list_fixed_drives();
-    for d in &drives {
-        if Path::new(&format!("{}:\\EFI", d.letter)).exists() {
-            return Some(d.letter);
-        }
-    }
-    for cand in ['S', 'Z', 'R'] {
-        if drives.iter().any(|d| d.letter == cand) {
-            continue;
-        }
-        let target = format!("{}:", cand);
-        let out = cmd::run_capture("mountvol", &[&target, "/s"]).ok()?;
-        if out.code == Some(0) && Path::new(&format!("{}:\\EFI", cand)).exists() {
-            return Some(cand);
-        }
-    }
-    None
-}
+/// (Đã gỡ ở v0.7.19) Hàm find_efi_letter() cũ — quét các ổ ĐÃ CÓ
+/// ký tự để tìm thư mục \EFI ở gốc, dự phòng mountvol /s — không
+/// thấy được phân vùng EFI chưa có ký tự ổ và có thể trỏ nhầm
+/// phân vùng EFI của đĩa khác (rủi ro R1; ca thực địa
+/// 2026-11-18: bung ảnh 100% nhưng bcdboot thất bại, phải chạy
+/// bcdboot tay). Bước chốt boot của đường cài theo phân vùng nay
+/// dùng chung `disk::finalize_boot()` trong qsu_common.
 
 /// Copy đệ quy một thư mục (dùng cho payload `custom`). Nội dung chỉ
 /// được copy nguyên trạng — không bao giờ được diễn giải hay thực thi.
@@ -745,6 +761,19 @@ struct SourceLoaded {
     image_path: PathBuf,
     swm_pattern: Option<String>,
     editions: Vec<EditionInfo>,
+}
+
+/// Chế độ của trình duyệt file TÍCH HỢP (v0.7.19): chọn file
+/// nguồn cài đặt, hoặc chọn thư mục driver. Trình duyệt này
+/// thay hẳn hộp thoại file của Windows (NWG FileDialog /
+/// GetOpenFileName) — hộp thoại đó KHÔNG mở được trong WinPE
+/// BHT/Anhdv (thực địa 2026-11-18: bấm "Chọn file..." không có
+/// cửa sổ nào hiện), trong khi cửa sổ Win32 thường của module
+/// thì chạy bình thường.
+#[derive(Clone, Copy, PartialEq)]
+enum BrowserMode {
+    SourceFile,
+    DriverFolder,
 }
 
 #[derive(Default)]
@@ -840,16 +869,33 @@ fn spawn_enumerate(shared: SharedRef, sender: nwg::NoticeSender) {
     }
     set_status(&shared, &sender, "Đang liệt kê phân vùng (Win32 + đối chiếu diskpart/vol)...");
     std::thread::spawn(move || {
-        let vols = enumerate_volumes();
-        let summary = cross_check(&vols);
-        // Đĩa vật lý cho tuỳ chọn đích "Toàn bộ ổ đĩa" (§6b)
-        let disks = disk::list_physical_disks();
-        push_log(&shared, &sender, &format!("Đối chiếu chéo: {}", summary));
-        push_log(&shared, &sender, &format!("Đã liệt kê {} đĩa vật lý.", disks.len()));
-        let mut s = shared.lock().unwrap();
-        s.volumes = Some((vols, disks, summary));
-        s.busy = false;
-        drop(s);
+        // Bọc bắt lỗi toàn diện như luồng nạp nguồn (v0.7.19):
+        // panic trong liệt kê cũng phải nhả `busy`, nếu không
+        // mọi nút bấm kẹt cứng tới khi mở lại module.
+        let work = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let vols = enumerate_volumes();
+            let summary = cross_check(&vols);
+            // Đĩa vật lý cho tuỳ chọn đích "Toàn bộ ổ đĩa" (§6b)
+            let disks = disk::list_physical_disks();
+            (vols, disks, summary)
+        }));
+        match work {
+            Ok((vols, disks, summary)) => {
+                push_log(&shared, &sender, &format!("Đối chiếu chéo: {}", summary));
+                push_log(&shared, &sender, &format!("Đã liệt kê {} đĩa vật lý.", disks.len()));
+                let mut s = shared.lock().unwrap();
+                s.volumes = Some((vols, disks, summary));
+                s.busy = false;
+                drop(s);
+            }
+            Err(_) => {
+                push_log(&shared, &sender, "LỖI nội bộ khi liệt kê ổ đĩa (luồng nền bị sập) — bấm \"Quét lại ổ đĩa\" để thử lại.");
+                let mut s = shared.lock().unwrap();
+                s.busy = false;
+                s.status = Some("Liệt kê ổ đĩa lỗi nội bộ — bấm \"Quét lại ổ đĩa\" để thử lại.".to_string());
+                drop(s);
+            }
+        }
         sender.notice();
     });
 }
@@ -868,7 +914,12 @@ fn spawn_load_source(
     }
     set_status(&shared, &sender, &format!("Đang nạp nguồn {}...", path.display()));
     std::thread::spawn(move || {
-        let result = (|| -> Result<SourceLoaded, String> {
+        // Bọc bắt lỗi TOÀN DIỆN (v0.7.19): bất kỳ panic nào trong
+        // luồng nền cũng thành một kết quả Err bình thường —
+        // `busy` LUÔN được nhả và notice LUÔN được gửi, giao
+        // diện không bao giờ kẹt ở trạng thái khoá nút như ca
+        // thực địa "Không cho bấm nạp" (phải mở lại module).
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<SourceLoaded, String> {
             // Gỡ mount ISO cũ nếu đổi nguồn
             if let Some((prev_iso, _)) = &prev_mounted {
                 if prev_iso != &path {
@@ -894,14 +945,9 @@ fn spawn_load_source(
                         });
                     }
                 }
-                if !powershell_available() {
-                    return Err(
-                        "WinPE này không có PowerShell/cmdlet Storage nên không mount được ISO.\n\
-                         Cách xử lý: ở máy khác, mở file ISO (7-Zip/Explorer) và chép file sources\\install.wim \
-                         (hoặc .esd/.swm) ra ổ dữ liệu, rồi chọn trực tiếp file đó tại đây."
-                            .to_string(),
-                    );
-                }
+                // Mount bằng VirtDisk API gốc (qsu_common::iso) —
+                // KHÔNG qua PowerShell (v0.7.19). Lỗi attach đã
+                // mang sẵn hướng dẫn dự phòng trong thông điệp.
                 let letter = mount_iso(&path)?;
                 match find_image_file(letter) {
                     Some(image) => match load_editions(&image) {
@@ -932,7 +978,10 @@ fn spawn_load_source(
             } else {
                 Err("File nguồn phải là .iso hoặc install.wim / .esd / .swm.".to_string())
             }
-        })();
+        }))
+        .unwrap_or_else(|_| {
+            Err("Lỗi nội bộ khi nạp nguồn (luồng nền bị sập) — hãy thử nạp lại; nếu lặp lại, ghi lại đường dẫn file nguồn và báo người hỗ trợ.".to_string())
+        });
         let mut s = shared.lock().unwrap();
         s.source = Some(result);
         s.busy = false;
@@ -1230,7 +1279,11 @@ fn spawn_install(shared: SharedRef, sender: nwg::NoticeSender, plan: InstallPlan
                 std::fs::write(panther.join("unattend.xml"), xml)
             });
             match write_res {
-                Ok(_) => log.line("Đã ghi autounattend.xml + unattend.xml vào Windows\\Panther."),
+                Ok(_) => {
+                    log.line("Đã ghi autounattend.xml + unattend.xml vào Windows\\Panther.");
+                    // [Cơ chế] (v0.7.19): dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu" của tài khoản admin.
+                    log.line("[Cơ chế] autounattend.xml mang hai lệnh FirstLogonCommands cho tài khoản admin — `net user <tên> /logonpasswordchg:no` và đặt PasswordNeverExpires: tài khoản Setup tạo từ unattend mang cờ phải đổi mật khẩu ở lần đăng nhập đầu (pwdLastSet=0), không dọn cờ thì AutoLogon bị chặn ở màn hình đổi mật khẩu thay vì vào thẳng desktop (thực địa 2026-11-18). Áp dụng cả khi mật khẩu để trống lẫn khi có đặt.");
+                }
                 Err(e) => {
                     done(&shared, &sender, fail("Ghi autounattend.xml", e.to_string()));
                     return;
@@ -1263,48 +1316,42 @@ fn spawn_install(shared: SharedRef, sender: nwg::NoticeSender, plan: InstallPlan
             }
         }
 
-        // --- Bước 6: bcdboot ---
+        // --- Bước 6: chốt boot (bcdboot) ---
         set_progress(&shared, &sender, 95, "Đang tạo boot (bcdboot)...");
-        let bcdboot_path = Path::new(&target_root).join("Windows").join("System32").join("bcdboot.exe");
-        let bcdboot_s = if bcdboot_path.exists() {
-            bcdboot_path.to_string_lossy().into_owned()
-        } else {
-            "bcdboot".to_string()
-        };
-        let win_arg = format!("{}\\Windows", target_root);
-        let boot_ok = if let Some(bl) = wipe_boot {
+        let boot_res: Result<char, String> = if let Some(bl) = wipe_boot {
             // wipeDisk: trỏ vào phân vùng boot MỚI vừa chia (EFI mới /
             // System Reserved mới), không dùng phân vùng EFI cũ.
+            // (Giữ nguyên đường đã chạy đúng ở thực địa.)
+            let bcdboot_path = Path::new(&target_root).join("Windows").join("System32").join("bcdboot.exe");
+            let bcdboot_s = if bcdboot_path.exists() {
+                bcdboot_path.to_string_lossy().into_owned()
+            } else {
+                "bcdboot".to_string()
+            };
+            let win_arg = format!("{}\\Windows", target_root);
             let s_arg = format!("{}:", bl);
             let fw = if plan.uefi { "UEFI" } else { "BIOS" };
-            cmd::run_logged(&log, &bcdboot_s, &[&win_arg, "/s", &s_arg, "/f", fw])
-                .map(|o| o.code == Some(0))
-                .unwrap_or(false)
-        } else if plan.uefi {
-            match find_efi_letter() {
-                Some(efi) => {
-                    let s_arg = format!("{}:", efi);
-                    cmd::run_logged(&log, &bcdboot_s, &[&win_arg, "/s", &s_arg, "/f", "UEFI"])
-                        .map(|o| o.code == Some(0))
-                        .unwrap_or(false)
-                }
-                None => {
-                    log.line("Không tìm được phân vùng EFI cho bcdboot.");
-                    false
-                }
+            match cmd::run_logged(&log, &bcdboot_s, &[&win_arg, "/s", &s_arg, "/f", fw]) {
+                Ok(o) if o.code == Some(0) => Ok(bl),
+                Ok(o) => Err(format!(
+                    "bcdboot vào phân vùng boot mới {}: trả mã {:?} — output của bcdboot đã ghi trong log phía trên; Windows mới chưa khởi động được.",
+                    bl, o.code
+                )),
+                Err(e) => Err(format!("không chạy được bcdboot: {}", e)),
             }
         } else {
-            let s_arg = format!("{}:", eff_letter);
-            cmd::run_logged(&log, &bcdboot_s, &[&win_arg, "/s", &s_arg, "/f", "BIOS"])
-                .map(|o| o.code == Some(0))
-                .unwrap_or(false)
+            // Cài theo phân vùng (v0.7.19): helper DÙNG CHUNG
+            // disk::finalize_boot — tìm phân vùng boot TRÊN CÙNG
+            // ĐĨA với phân vùng đích theo loại phân vùng, tự gán
+            // ký tự nếu thiếu, bcdboot + kiểm chứng file boot
+            // thật; Err mang theo output của bcdboot. Thay hẳn
+            // find_efi_letter() cũ (ca thực địa 2026-11-18: bung
+            // ảnh 100% nhưng bước này thất bại vì phân vùng EFI
+            // của SSD không có ký tự ổ).
+            disk::finalize_boot(&log, eff_letter, plan.uefi).map(|f| f.boot_letter)
         };
-        if !boot_ok {
-            done(
-                &shared,
-                &sender,
-                fail("bcdboot", "không tạo được mục boot — Windows mới chưa khởi động được, cần kiểm tra phân vùng EFI/System".to_string()),
-            );
+        if let Err(e) = boot_res {
+            done(&shared, &sender, fail("bcdboot", e));
             return;
         }
 
@@ -1343,6 +1390,13 @@ struct Model {
     running: bool,
     succeeded: bool,
     log_rendered: usize,
+    // --- Trình duyệt file tích hợp (v0.7.19) ---
+    browser_mode: BrowserMode,
+    browser_dir: PathBuf,
+    /// Các mục đang hiện, song song với lst_bentries:
+    /// (đường dẫn đầy đủ, là thư mục?)
+    browser_entries: Vec<(PathBuf, bool)>,
+    browser_drives: Vec<char>,
 }
 
 struct App {
@@ -1382,6 +1436,15 @@ struct App {
     txt_log: nwg::TextBox,
     lbl_status: nwg::Label,
     btn_close: nwg::Button,
+    // --- Trình duyệt file tích hợp (v0.7.19) ---
+    win_browser: nwg::Window,
+    lbl_btitle: nwg::Label,
+    lst_bdrives: nwg::ListBox<String>,
+    lbl_bpath: nwg::Label,
+    lst_bentries: nwg::ListBox<String>,
+    btn_bup: nwg::Button,
+    btn_bchoose: nwg::Button,
+    btn_bcancel: nwg::Button,
     model: RefCell<Model>,
     shared: SharedRef,
 }
@@ -1634,7 +1697,7 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         "Cách dùng trong WinPE:\n\
          1) Boot USB WinPE (tạo bằng module Tạo Boot WinPE hoặc bộ WinPE sẵn có).\n\
          2) Mở CaiDatWinWinPE.exe từ ổ chứa công cụ này.\n\
-         3) Mục 1: chọn file .iso (cần WinPE có PowerShell) hoặc chọn trực tiếp sources\\install.wim/.esd/.swm, bấm Nạp nguồn, chọn phiên bản.\n\
+         3) Mục 1: bấm Chọn file... (trình duyệt file tích hợp của module) để chọn file .iso — module tự mount bằng VirtDisk, không cần PowerShell — hoặc chọn trực tiếp sources\\install.wim/.esd/.swm; cũng gõ thẳng đường dẫn vào ô được. Bấm Nạp nguồn, chọn phiên bản.\n\
          4) Mục 2: chọn phân vùng đích — ổ chứa công cụ và ổ chứa nguồn bị loại trừ mặc định; bật Format chỉ khi muốn xoá sạch ổ đích (phải nhập serial xác nhận).\n\
          5) Mục 3: thư mục driver (inject offline), autounattend (tên máy + tài khoản admin). Bấm BẮT ĐẦU CÀI ĐẶT, xong bấm Khởi động lại.",
         f_normal, (16, 164), (1008, 128)
@@ -1662,6 +1725,53 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
 
     let mut notice = Default::default();
     nwg::Notice::builder().parent(&window).build(&mut notice).expect("notice");
+
+    // --- Cửa sổ trình duyệt file TÍCH HỢP (v0.7.19) ---
+    // Cửa sổ Win32 thường do module tự sở hữu — không phụ thuộc
+    // hộp thoại file của Windows (không mở được trong WinPE
+    // BHT/Anhdv). Ban đầu ẨN; mở khi bấm "Chọn file..." hoặc
+    // "Duyệt..." (xem browser_open).
+    let mut win_browser = Default::default();
+    nwg::Window::builder()
+        .size((720, 520))
+        .position((200, 110))
+        .title("Chọn file — trình duyệt tích hợp")
+        .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::MINIMIZE_BOX)
+        .build(&mut win_browser)
+        .expect("browser window");
+    let mut lbl_btitle = Default::default();
+    nwg::Label::builder()
+        .text("Chọn file nguồn cài đặt (.iso / .wim / .esd / .swm)")
+        .font(Some(f_section))
+        .parent(&win_browser)
+        .build(&mut lbl_btitle)
+        .expect("browser title");
+    lbl_btitle.set_position(16, 10);
+    lbl_btitle.set_size(688, 24);
+    let mut lst_bdrives = Default::default();
+    nwg::ListBox::builder().parent(&win_browser).build(&mut lst_bdrives).expect("browser drives");
+    lst_bdrives.set_position(16, 40);
+    lst_bdrives.set_size(688, 56);
+    let mut lbl_bpath = Default::default();
+    nwg::Label::builder().text("").font(Some(f_mono)).parent(&win_browser).build(&mut lbl_bpath).expect("browser path");
+    lbl_bpath.set_position(16, 104);
+    lbl_bpath.set_size(688, 20);
+    let mut lst_bentries = Default::default();
+    nwg::ListBox::builder().parent(&win_browser).build(&mut lst_bentries).expect("browser entries");
+    lst_bentries.set_position(16, 128);
+    lst_bentries.set_size(688, 284);
+    let mut btn_bup = Default::default();
+    nwg::Button::builder().text("Lên một cấp").font(Some(f_button)).parent(&win_browser).build(&mut btn_bup).expect("browser up");
+    btn_bup.set_position(16, 424);
+    btn_bup.set_size(150, 38);
+    let mut btn_bchoose = Default::default();
+    nwg::Button::builder().text("Chọn").font(Some(f_button)).parent(&win_browser).build(&mut btn_bchoose).expect("browser choose");
+    btn_bchoose.set_position(372, 424);
+    btn_bchoose.set_size(160, 38);
+    let mut btn_bcancel = Default::default();
+    nwg::Button::builder().text("Huỷ").font(Some(f_button)).parent(&win_browser).build(&mut btn_bcancel).expect("browser cancel");
+    btn_bcancel.set_position(548, 424);
+    btn_bcancel.set_size(156, 38);
 
     let (settings, settings_err) = Settings::load(&exe_dir);
     let shared: SharedRef = Arc::new(Mutex::new(Shared::default()));
@@ -1706,6 +1816,14 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         txt_log,
         lbl_status,
         btn_close,
+        win_browser,
+        lbl_btitle,
+        lst_bdrives,
+        lbl_bpath,
+        lst_bentries,
+        btn_bup,
+        btn_bchoose,
+        btn_bcancel,
         model: RefCell::new(Model {
             in_winpe,
             uefi,
@@ -1724,6 +1842,10 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
             running: false,
             succeeded: false,
             log_rendered: 0,
+            browser_mode: BrowserMode::SourceFile,
+            browser_dir: PathBuf::new(),
+            browser_entries: Vec::new(),
+            browser_drives: Vec::new(),
         }),
         shared,
     });
@@ -1790,9 +1912,16 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         app.txt_log.set_size(1008, 160);
     }
 
+    // Trình duyệt file tích hợp: ẩn cho tới khi được mở.
+    set_ctrl_visible(&app.win_browser.handle, false);
+
     let handler = app.clone();
     nwg::full_bind_event_handler(&window.handle, move |evt, data, handle| {
         handle_event(&handler, evt, &data, handle);
+    });
+    let handler_b = app.clone();
+    nwg::full_bind_event_handler(&app.win_browser.handle, move |evt, data, handle| {
+        handle_browser_event(&handler_b, evt, &data, handle);
     });
 
     (window, app)
@@ -1986,6 +2115,12 @@ fn set_busy_ui(app: &Rc<App>) {
 
 fn refresh(app: &Rc<App>) {
     render_log(app);
+    // Hộp thoại bị TRÌ HOÃN tới cuối refresh (v0.7.19): trạng
+    // thái + nút bấm được cập nhật (set_busy_ui) TRƯỚC khi bất
+    // kỳ hộp thoại modal nào hiện — vòng lặp modal của hộp
+    // thoại trong WinPE không còn cơ hội nuốt mất lượt cập nhật
+    // mở khoá nút như ca thực địa "Không cho bấm nạp".
+    let mut pending_dialog: Option<(bool, String)> = None;
     let (volumes, source, progress, status, done) = {
         let mut s = app.shared.lock().unwrap();
         (s.volumes.take(), s.source.take(), s.progress.take(), s.status.take(), s.install_done.take())
@@ -2069,7 +2204,7 @@ fn refresh(app: &Rc<App>) {
             }
             Err(e) => {
                 app.lbl_source_info.set_text("Nạp nguồn thất bại — xem thông báo lỗi.");
-                error_box("Cài Đặt Win = WinPE", &e);
+                pending_dialog = Some((true, e));
             }
         }
     }
@@ -2083,15 +2218,26 @@ fn refresh(app: &Rc<App>) {
             Ok(msg) => {
                 app.model.borrow_mut().succeeded = true;
                 app.lbl_status.set_text("Cài đặt hoàn tất — bấm Khởi động lại để vào Windows mới.");
-                info_box("Cài Đặt Win = WinPE", &msg);
+                pending_dialog = Some((false, msg));
             }
             Err(e) => {
                 app.lbl_status.set_text("Cài đặt thất bại — xem log để biết bước lỗi.");
-                error_box("Cài Đặt Win = WinPE", &e);
+                pending_dialog = Some((true, e));
             }
         }
     }
+    // Mở khoá/cập nhật nút TRƯỚC, hộp thoại SAU (v0.7.19 — xem
+    // chú thích đầu hàm). Sau khi hộp thoại đóng, đồng bộ lại
+    // trạng thái nút một lần nữa cho chắc.
     set_busy_ui(app);
+    if let Some((is_error, text)) = pending_dialog {
+        if is_error {
+            error_box("Cài Đặt Win = WinPE", &text);
+        } else {
+            info_box("Cài Đặt Win = WinPE", &text);
+        }
+        set_busy_ui(app);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2630,6 +2776,280 @@ fn do_prepare(app: &Rc<App>) {
 }
 
 // ---------------------------------------------------------------------------
+// Trình duyệt file TÍCH HỢP (v0.7.19) — thay hộp thoại file của
+// Windows (không mở được trong WinPE BHT/Anhdv). Chỉ dùng Win32
+// cơ bản: GetLogicalDriveStringsW / GetDriveTypeW /
+// GetVolumeInformationW để liệt kê ổ, read_dir để duyệt thư
+// mục. File nguồn được lọc *.iso/*.wim/*.esd/*.swm và hiện TÊN
+// ĐẦY ĐỦ; đường dẫn chọn được trả NGUYÊN VĂN vào ô nguồn (đúng
+// như khi gõ tay — đường đã cứu ca thực địa 2026-11-18).
+// ---------------------------------------------------------------------------
+fn drive_type_name(t: u32) -> &'static str {
+    match t {
+        DRIVE_FIXED => "ổ cố định",
+        DRIVE_REMOVABLE => "ổ di động/USB",
+        DRIVE_CDROM => "ổ CD/DVD",
+        DRIVE_REMOTE => "ổ mạng",
+        DRIVE_RAMDISK => "ổ RAM (WinPE)",
+        _ => "loại khác",
+    }
+}
+
+/// Mọi ổ đĩa logic hiện có: (ký tự, dòng hiển thị kèm nhãn + loại).
+fn browser_list_drives() -> Vec<(char, String)> {
+    let mut buf = vec![0u16; 1024];
+    let n = unsafe { GetLogicalDriveStringsW(buf.len() as DWORD, buf.as_mut_ptr()) } as usize;
+    let mut out = Vec::new();
+    if n == 0 {
+        return out;
+    }
+    buf.truncate(n.min(buf.len()));
+    for part in buf.split(|c| *c == 0) {
+        if part.len() < 2 {
+            continue;
+        }
+        let letter = (part[0] as u8 as char).to_ascii_uppercase();
+        if !letter.is_ascii_alphabetic() {
+            continue;
+        }
+        let root = format!("{}:\\", letter);
+        let root_w = sys::wide(&root);
+        let dtype = unsafe { GetDriveTypeW(root_w.as_ptr()) };
+        let mut label_buf = vec![0u16; 261];
+        let ok = unsafe {
+            GetVolumeInformationW(
+                root_w.as_ptr(),
+                label_buf.as_mut_ptr(),
+                label_buf.len() as DWORD,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                0,
+            )
+        };
+        let label = if ok != 0 {
+            sys::from_wide(&label_buf)
+        } else {
+            String::new()
+        };
+        out.push((
+            letter,
+            format!(
+                "{}: — {} — {}",
+                letter,
+                if label.is_empty() { "(không nhãn)".to_string() } else { label },
+                drive_type_name(dtype)
+            ),
+        ));
+    }
+    out
+}
+
+/// Đổ danh sách mục của thư mục đang đứng lên trình duyệt file.
+fn browser_fill(app: &Rc<App>) {
+    let (mode, dir) = {
+        let m = app.model.borrow();
+        (m.browser_mode, m.browser_dir.clone())
+    };
+    let mut entries: Vec<(PathBuf, bool)> = Vec::new();
+    let mut items: Vec<String> = Vec::new();
+    if let Some(parent) = dir.parent() {
+        entries.push((parent.to_path_buf(), true));
+        items.push("..  (lên một cấp)".to_string());
+    }
+    let mut folders: Vec<PathBuf> = Vec::new();
+    let mut files: Vec<PathBuf> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                folders.push(p);
+            } else if mode == BrowserMode::SourceFile {
+                let ext = p
+                    .extension()
+                    .map(|x| x.to_string_lossy().to_ascii_lowercase())
+                    .unwrap_or_default();
+                if ["iso", "wim", "esd", "swm"].contains(&ext.as_str()) {
+                    files.push(p);
+                }
+            }
+        }
+    }
+    let name_key = |p: &PathBuf| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    };
+    folders.sort_by_key(name_key);
+    files.sort_by_key(name_key);
+    for f in folders {
+        items.push(format!(
+            "[Thư mục] {}",
+            f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        ));
+        entries.push((f, true));
+    }
+    for f in files {
+        items.push(
+            f.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        );
+        entries.push((f, false));
+    }
+    let empty_note = entries.is_empty() || (entries.len() == 1 && dir.parent().is_some());
+    app.lst_bentries.set_collection(items);
+    app.lbl_bpath.set_text(&format!(
+        "Đang ở: {}{}",
+        dir.display(),
+        if empty_note && mode == BrowserMode::SourceFile {
+            "  —  (không có file .iso/.wim/.esd/.swm nào ở đây)"
+        } else {
+            ""
+        }
+    ));
+    app.btn_bchoose.set_text(if mode == BrowserMode::DriverFolder {
+        "Chọn thư mục này"
+    } else {
+        "Chọn mục đã đánh dấu"
+    });
+    app.model.borrow_mut().browser_entries = entries;
+}
+
+/// Mở trình duyệt file ở chế độ tương ứng.
+fn browser_open(app: &Rc<App>, mode: BrowserMode) {
+    let drives = browser_list_drives();
+    let items: Vec<String> = drives.iter().map(|(_, d)| d.clone()).collect();
+    app.lst_bdrives.set_collection(items);
+    app.lbl_btitle.set_text(if mode == BrowserMode::DriverFolder {
+        "Chọn thư mục driver để inject offline"
+    } else {
+        "Chọn file nguồn cài đặt (.iso / .wim / .esd / .swm)"
+    });
+    app.win_browser.set_text(if mode == BrowserMode::DriverFolder {
+        "Chọn thư mục driver — trình duyệt tích hợp"
+    } else {
+        "Chọn file nguồn — trình duyệt tích hợp"
+    });
+    // Thư mục bắt đầu: thư mục chứa đường dẫn đang có trong ô
+    // tương ứng; không có thì thư mục chứa chính module.
+    let start = {
+        let m = app.model.borrow();
+        let cur = if mode == BrowserMode::SourceFile {
+            app.inp_source.text()
+        } else {
+            app.inp_driver.text()
+        };
+        let p = PathBuf::from(cur.trim());
+        let cand = if p.is_dir() {
+            Some(p.clone())
+        } else {
+            p.parent().map(|x| x.to_path_buf())
+        };
+        cand.filter(|d| d.is_dir())
+            .unwrap_or_else(|| m.exe_dir.clone())
+    };
+    {
+        let mut m = app.model.borrow_mut();
+        m.browser_mode = mode;
+        m.browser_drives = drives.iter().map(|(c, _)| *c).collect();
+        m.browser_dir = start;
+    }
+    browser_fill(app);
+    set_ctrl_visible(&app.win_browser.handle, true);
+    app.lst_bentries.set_focus();
+}
+
+/// Kích hoạt một mục trong trình duyệt: thư mục thì đi vào,
+/// file thì chọn luôn (gọi từ double-click và nút Chọn).
+fn browser_activate(app: &Rc<App>, idx: usize) {
+    let entry = {
+        let m = app.model.borrow();
+        m.browser_entries.get(idx).cloned()
+    };
+    let Some((path, is_dir)) = entry else { return };
+    if is_dir {
+        app.model.borrow_mut().browser_dir = path;
+        browser_fill(app);
+    } else {
+        set_ctrl_visible(&app.win_browser.handle, false);
+        app.inp_source.set_text(&path.to_string_lossy());
+        start_load_source(app, path);
+    }
+}
+
+fn handle_browser_event(app: &Rc<App>, evt: nwg::Event, _data: &nwg::EventData, handle: nwg::ControlHandle) {
+    match evt {
+        nwg::Event::OnButtonClick => {
+            if handle == app.btn_bcancel.handle {
+                set_ctrl_visible(&app.win_browser.handle, false);
+            } else if handle == app.btn_bup.handle {
+                let parent = {
+                    let m = app.model.borrow();
+                    m.browser_dir.parent().map(|p| p.to_path_buf())
+                };
+                if let Some(p) = parent {
+                    app.model.borrow_mut().browser_dir = p;
+                    browser_fill(app);
+                }
+            } else if handle == app.btn_bchoose.handle {
+                let mode = app.model.borrow().browser_mode;
+                if mode == BrowserMode::DriverFolder {
+                    // Thư mục đang đánh dấu (nếu là thư mục) thắng;
+                    // không thì thư mục đang đứng.
+                    let sel = app.lst_bentries.selection();
+                    let chosen = {
+                        let m = app.model.borrow();
+                        match sel.and_then(|i| m.browser_entries.get(i).cloned()) {
+                            Some((p, true)) => p,
+                            _ => m.browser_dir.clone(),
+                        }
+                    };
+                    app.inp_driver.set_text(&chosen.to_string_lossy());
+                    set_ctrl_visible(&app.win_browser.handle, false);
+                } else if let Some(i) = app.lst_bentries.selection() {
+                    browser_activate(app, i);
+                }
+            }
+        }
+        nwg::Event::OnListBoxSelect => {
+            if handle == app.lst_bdrives.handle {
+                if let Some(i) = app.lst_bdrives.selection() {
+                    let letter = {
+                        let m = app.model.borrow();
+                        m.browser_drives.get(i).copied()
+                    };
+                    if let Some(l) = letter {
+                        app.model.borrow_mut().browser_dir = PathBuf::from(format!("{}:\\", l));
+                        browser_fill(app);
+                    }
+                }
+            } else if handle == app.lst_bentries.handle {
+                if let Some(i) = app.lst_bentries.selection() {
+                    let e = {
+                        let m = app.model.borrow();
+                        m.browser_entries.get(i).cloned()
+                    };
+                    if let Some((p, _)) = e {
+                        app.lbl_bpath.set_text(&format!("Đã đánh dấu: {}", p.display()));
+                    }
+                }
+            }
+        }
+        nwg::Event::OnListBoxDoubleClick => {
+            if handle == app.lst_bentries.handle {
+                if let Some(i) = app.lst_bentries.selection() {
+                    browser_activate(app, i);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Sự kiện
 // ---------------------------------------------------------------------------
 fn handle_event(app: &Rc<App>, evt: nwg::Event, data: &nwg::EventData, handle: nwg::ControlHandle) {
@@ -2645,22 +3065,14 @@ fn handle_event(app: &Rc<App>, evt: nwg::Event, data: &nwg::EventData, handle: n
                     if let Some(iso) = app.model.borrow().mounted_iso.clone() {
                         dismount_iso(&iso);
                     }
+                    // Dọn mọi mount VirtDisk còn lại của tiến trình.
+                    qsu_common::iso::dismount_all();
                     nwg::stop_thread_dispatch();
                 }
             } else if handle == app.btn_browse_source.handle {
-                let mut dlg = Default::default();
-                let built = nwg::FileDialog::builder()
-                    .title("Chọn file ISO hoặc install.wim/.esd/.swm")
-                    .action(nwg::FileDialogAction::Open)
-                    .filters("File cài Windows (*.iso;*.wim;*.esd;*.swm)|*.iso;*.wim;*.esd;*.swm|Tất cả (*.*)|*.*")
-                    .build(&mut dlg);
-                if built.is_ok() && dlg.run(None::<&nwg::Window>) {
-                    if let Ok(p) = dlg.get_selected_item() {
-                        let p = p.to_string_lossy().into_owned();
-                        app.inp_source.set_text(&p);
-                        start_load_source(app, PathBuf::from(p));
-                    }
-                }
+                // Trình duyệt file TÍCH HỢP (v0.7.19) — hộp thoại
+                // file của Windows không mở được trong WinPE này.
+                browser_open(app, BrowserMode::SourceFile);
             } else if handle == app.btn_load_source.handle {
                 let text = app.inp_source.text().trim().to_string();
                 if text.is_empty() {
@@ -2671,16 +3083,8 @@ fn handle_event(app: &Rc<App>, evt: nwg::Event, data: &nwg::EventData, handle: n
             } else if handle == app.btn_refresh_vols.handle || handle == app.btn_prep_refresh.handle {
                 spawn_enumerate(app.shared.clone(), app.notice.sender());
             } else if handle == app.btn_browse_driver.handle {
-                let mut dlg = Default::default();
-                let built = nwg::FileDialog::builder()
-                    .title("Chọn thư mục driver để inject offline")
-                    .action(nwg::FileDialogAction::OpenDirectory)
-                    .build(&mut dlg);
-                if built.is_ok() && dlg.run(None::<&nwg::Window>) {
-                    if let Ok(p) = dlg.get_selected_item() {
-                        app.inp_driver.set_text(&p.to_string_lossy());
-                    }
-                }
+                // Cùng trình duyệt tích hợp, chế độ chọn thư mục.
+                browser_open(app, BrowserMode::DriverFolder);
             } else if handle == app.btn_start.handle {
                 on_start(app);
             } else if handle == app.btn_confirm_format.handle {

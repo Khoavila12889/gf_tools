@@ -1590,6 +1590,14 @@ fn spawn_load_editions(
 // AutoLogon không mật khẩu là cấu hình Setup hỗ trợ cho đăng nhập
 // nội bộ; KHÔNG sinh <Value> rỗng). Khi có mật khẩu, mật khẩu chỉ
 // xuất hiện tại đây và không vào log.
+// FirstLogonCommands (v0.7.19) chỉ chứa hai lệnh DỌN CỜ MẬT KHẨU
+// cho chính tài khoản admin vừa tạo (không phải lệnh cài ứng
+// dụng): tài khoản Setup tạo ra mang cờ "phải đổi mật khẩu ở lần
+// đăng nhập đầu" (pwdLastSet = 0) khiến AutoLogon bị chặn ở màn
+// hình đổi mật khẩu — thực địa v0.7.18. `net user <tên>
+// /logonpasswordchg:no` dọn cờ đó, lệnh PowerShell đặt
+// PasswordNeverExpires để mật khẩu (kể cả mật khẩu trống theo
+// chính sách mặc định) không bị ép hết hạn về sau.
 // ---------------------------------------------------------------------------
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -1621,6 +1629,28 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
             pass
         )
     };
+    // Lệnh chạy ở lần đăng nhập đầu (v0.7.19): tài khoản Setup
+    // tạo từ unattend mang cờ "phải đổi mật khẩu ở lần đăng
+    // nhập đầu tiên" (pwdLastSet = 0) — thực địa v0.7.18 cho
+    // thấy AutoLogon bị chặn ở màn hình đổi mật khẩu thay vì
+    // vào thẳng desktop. Hai lệnh này dọn cờ đó + đặt mật khẩu
+    // không hết hạn, áp dụng CẢ khi mật khẩu để trống lẫn khi
+    // có đặt, để ca cài hoàn toàn tự động về được desktop.
+    let fl_commands = format!(
+        r#"        <SynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <CommandLine>net user {user} /logonpasswordchg:no</CommandLine>
+          <Description>Không bắt đổi mật khẩu ở lần đăng nhập đầu tiên</Description>
+          <RequiresUserInput>false</RequiresUserInput>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Set-LocalUser -Name '{user}' -PasswordNeverExpires $true"</CommandLine>
+          <Description>Mật khẩu tài khoản admin không hết hạn</Description>
+          <RequiresUserInput>false</RequiresUserInput>
+        </SynchronousCommand>"#,
+        user = user
+    );
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
@@ -1665,6 +1695,7 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
         <LogonCount>1</LogonCount>
       </AutoLogon>
       <FirstLogonCommands>
+{flc}
       </FirstLogonCommands>
     </component>
   </settings>
@@ -1676,6 +1707,7 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
         tz = xml_escape(&st.timezone),
         comp = comp,
         user = user,
+        flc = fl_commands,
     )
 }
 
@@ -3082,6 +3114,8 @@ fn exec_clean(
     // --- autounattend.xml: 78%
     set_exec_progress(shared, sender, 78, "Sinh autounattend.xml...");
     let unattend = build_unattend(settings, &plan.computer_name, &plan.admin_user, &plan.admin_password);
+    // [Cơ chế] (v0.7.19): dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu" của tài khoản admin.
+    log.line("[Cơ chế] autounattend.xml mang hai lệnh FirstLogonCommands cho tài khoản admin — `net user <tên> /logonpasswordchg:no` và đặt PasswordNeverExpires: tài khoản Setup tạo từ unattend mang cờ phải đổi mật khẩu ở lần đăng nhập đầu (pwdLastSet=0), không dọn cờ thì AutoLogon bị chặn ở màn hình đổi mật khẩu thay vì vào thẳng desktop (thực địa v0.7.18). Lệnh chạy ở lần đăng nhập đầu, áp dụng cả khi mật khẩu để trống lẫn khi có đặt.");
     if let Err(e) = std::fs::write(stage_dir.join("autounattend.xml"), unattend) {
         fail(format!("không ghi được autounattend.xml: {}", e));
         return;
@@ -3235,8 +3269,11 @@ NẾU WINPE KHÔNG LÊN ĐƯỢC
 /// rebuild của v0.7.13 + đóng gói lại WinPE một ảnh của
 /// v0.7.15 + engine tự gán ký tự ổ cho phân vùng boot sau khi
 /// chia của v0.7.16 + mount ISO ba lớp của v0.7.17 + hiển thị
-/// tiến trình hai bề mặt trong WinPE của v0.7.18). Bản sao
-/// dạng markdown: docs/co_che_v0.7.18.md.
+/// tiến trình hai bề mặt trong WinPE của v0.7.18 + chốt boot
+/// cùng đĩa cho đường preserve, module WinPE tự mount ISO /
+/// trình duyệt file tích hợp / chống kẹt nút, và dọn cờ đổi
+/// mật khẩu trong autounattend của v0.7.19). Bản sao dạng
+/// markdown: docs/co_che_v0.7.19.md.
 const TAI_LIEU_TEXT: &str = r#"TÀI LIỆU CƠ CHẾ — CÀI MỚI QUA WINPE (cơ chế của bản build hiện tại)
 
 Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài mới từ xa (qua WinPE)". Quá trình gồm hai giai đoạn: chuẩn bị (staging) chạy trong Windows hiện tại bằng wizard này, và cài thật chạy trong WinPE bằng engine WinPEInstall.exe.
@@ -3289,6 +3326,12 @@ Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài 
 - Từ v0.7.18 engine có HAI bề mặt tiến trình. Bề mặt CHÍNH là console của chính launcher qsu_start.cmd: engine thừa hưởng console đó nên mọi dòng log đồng thời in thẳng ra console, giai đoạn hiện tại in thành dòng riêng, và phần trăm bung ảnh cập nhật liên tục tại chỗ bằng dòng \r "Đang bung ảnh: <edition> — NN%". DISM xả tiến độ bằng ký tự \r (không phải \n) nên engine đọc output của DISM theo từng đoạn cắt ở cả \r lẫn \n để phần trăm tới được màn hình ngay khi DISM chạy, không đợi tới lúc xong.
 - Bề mặt PHỤ là màn hình tiến trình toàn màn hình tông xanh (thiết kế theo màn hình mẫu của tool gốc, thương hiệu của bản rebuild): tiêu đề "CÀI ĐẶT WINDOWS TỰ ĐỘNG", dòng cảnh báo không tắt máy, thẻ giữa hiện bước đang chạy + số % lớn + thanh tiến trình + đồng hồ thời gian đã trôi chạy từng giây (tín hiệu còn sống ngay cả khi DISM lâu không nhả % mới), kèm đường dẫn file log. Ngoài bước bung ảnh, số % là tiến độ tổng thể theo giai đoạn; trong bước bung ảnh, số % là phần trăm trực tiếp của DISM. Màn hình này mở trước mọi công việc và chạy trên luồng riêng — lỗi hiển thị (nếu có) không ảnh hưởng luồng cài đặt hay dòng console.
 - Khi có lỗi, engine KHÔNG thoát và KHÔNG reboot: nó neo lại trong WinPE, giữ nguyên bước đang dừng + nội dung lỗi + đường dẫn log trên cả console lẫn màn hình tiến trình để kỹ thuật viên đọc/chụp, rồi tắt máy bằng nút nguồn. Chỉ khi cài xong xuôi engine mới tự reboot vào Windows mới như trước.
+
+12. CHỐT BOOT CÙNG ĐĨA CHO ĐƯỜNG PRESERVE + MODULE WINPE TỰ MOUNT ISO (từ v0.7.19)
+- Bối cảnh: ca thực địa 2026-11-18, cài theo phân vùng bằng module Cài Đặt Win = WinPE trên WinPE USB — DISM bung ảnh đạt 100% nhưng bước bcdboot thất bại, kỹ thuật viên phải tự gán ký tự cho phân vùng EFI rồi chạy bcdboot bằng tay mới boot được. Nguyên nhân: đường preserve cũ (cả engine lẫn module WinPE) tìm phân vùng EFI bằng cách quét các ổ ĐÃ CÓ ký tự ổ để tìm thư mục \EFI ở gốc, không thấy thì mountvol /s. Phân vùng EFI trên đĩa đích hôm đó không có ký tự ổ nào nên vô hình với cách tìm này; mountvol /s lại không phân biệt được đĩa khi máy có hai phân vùng EFI (mỗi đĩa một cái), có thể trỏ nhầm sang EFI của đĩa khác. Lỗi khi đó cũng chỉ là một câu chung chung, không kèm output của bcdboot nên không biết lý do thật.
+- Từ v0.7.19 bước chốt boot của cả hai đường preserve dùng chung một hàm trong thư viện dùng chung (disk::finalize_boot): xác định đĩa vật lý chứa phân vùng Windows đích, tìm phân vùng boot TRÊN CHÍNH ĐĨA ĐÓ theo loại phân vùng — GPT là phân vùng EFI System theo GUID loại, MBR là phân vùng System Reserved đang active (không có thì dùng chính phân vùng Windows) — thiếu ký tự ổ thì tự gán bằng cùng cơ chế tự chữa của mục 7 (script diskpart phụ / SetVolumeMountPointW, chốt bằng truy cập thử đường dẫn thật), rồi mới chạy bcdboot (/f UEFI cho GPT, /f BIOS cho MBR) với output được thu trọn vào log. Thành công chỉ được tính khi KIỂM CHỨNG ĐƯỢC file boot thật trên phân vùng boot (EFI\Microsoft\Boot\bootmgfw.efi + BCD với UEFI; bootmgr + Boot\BCD với BIOS) — mã thoát 0 của bcdboot chưa đủ; lần chạy đầu chưa đạt thì tự chạy lại một lần. Thất bại hẳn thì thông báo lỗi mang theo nguyên văn output của bcdboot. Không tồn tại đường nào bỏ qua bước boot lặng lẽ. Hai chế độ WIPE DISK / REBUILD giữ nguyên đường chốt boot riêng như trước.
+- Module Cài Đặt Win = WinPE bỏ phụ thuộc PowerShell khi chọn nguồn: file ISO được mount bằng VirtDisk API gốc (cùng cơ chế lớp 3 của mục 1, nay đặt trong thư viện dùng chung) rồi đọc thẳng sources\install.* — các WinPE phổ biến không có cmdlet Storage vẫn mount được ISO; gỡ mount đối xứng bằng DetachVirtualDisk khi đổi nguồn hoặc đóng module. Nếu chính VirtDisk cũng không attach được, thông báo hướng dẫn mount sẵn ISO bằng công cụ của WinPE rồi chọn/gõ thẳng file sources\install.wim (hoặc .esd/.swm) — đúng đường đã cứu ca thực địa. Nút "Chọn file..." nay mở TRÌNH DUYỆT FILE TÍCH HỢP của module (liệt kê mọi ổ đĩa, duyệt thư mục, lọc *.iso/*.wim/*.esd/*.swm, hiện tên file đầy đủ, nhấp đúp để chọn) thay cho hộp thoại file của Windows — hộp thoại đó không mở được trong các WinPE này; ô gõ đường dẫn trực tiếp vẫn dùng được như trước. Và sau bất kỳ lần nạp nguồn nào — thành công hay lỗi — các nút bấm đều được mở khoá lại: luồng nền được bọc bắt lỗi toàn diện và hộp thoại chỉ hiện sau khi trạng thái nút đã cập nhật, nút chỉ khoá trong lúc thao tác thật sự đang chạy (bản cũ từng kẹt nút "Nạp nguồn" sau một lần nạp lỗi, phải mở lại module).
+- autounattend.xml (cả wizard lẫn module WinPE sinh) nay mang hai lệnh chạy ở lần đăng nhập đầu cho tài khoản admin: net user <tên> /logonpasswordchg:no và đặt mật khẩu không hết hạn (PasswordNeverExpires qua PowerShell Set-LocalUser). Tài khoản Setup tạo từ unattend mang cờ "phải đổi mật khẩu ở lần đăng nhập đầu tiên" (pwdLastSet = 0) — thực địa bản v0.7.18 cho thấy AutoLogon bị chặn ở màn hình đổi mật khẩu (User name / Old password / New password) thay vì vào thẳng desktop. Hai lệnh này dọn cờ đó ngay ở lần đăng nhập đầu, áp dụng cả khi mật khẩu để trống lẫn khi có đặt, để ca cài hoàn toàn không cần người trông vẫn về được desktop.
 "#;
 
 // ---------------------------------------------------------------------------

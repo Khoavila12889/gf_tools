@@ -123,26 +123,15 @@ fn format_os_partition(log: &Arc<Logger>, letter: char) -> bool {
     }
 }
 
-/// Tìm phân vùng EFI (FAT32, có thư mục EFI) hoặc gán ký tự bằng mountvol /s
-fn find_efi_letter(drives: &[DriveInfo]) -> Option<char> {
-    for d in drives {
-        if Path::new(&format!("{}:\\EFI", d.letter)).exists() {
-            return Some(d.letter);
-        }
-    }
-    // Chưa có ký tự: gán S: (hoặc Z:) cho phân vùng hệ thống EFI
-    for cand in ['S', 'Z', 'R'] {
-        if drives.iter().any(|d| d.letter == cand) {
-            continue;
-        }
-        let target = format!("{}:", cand);
-        let out = cmd::run_capture("mountvol", &[&target, "/s"]).ok()?;
-        if out.code == Some(0) && Path::new(&format!("{}:\\EFI", cand)).exists() {
-            return Some(cand);
-        }
-    }
-    None
-}
+/// (Đã gỡ ở v0.7.19) Hàm find_efi_letter() cũ — quét các ổ ĐÃ CÓ
+/// ký tự để tìm thư mục \EFI ở gốc, dự phòng mountvol /s — không
+/// thấy được phân vùng EFI chưa có ký tự ổ và có thể trỏ nhầm
+/// phân vùng EFI của đĩa khác (rủi ro R1; ca thực địa
+/// 2026-11-18 ở module WinPE). Bước chốt boot của đường
+/// preserve nay dùng chung `disk::finalize_boot()` trong
+/// qsu_common: tìm phân vùng boot TRÊN CÙNG ĐĨA với phân vùng
+/// Windows theo loại phân vùng, tự gán ký tự nếu thiếu, kiểm
+/// chứng file boot thật sau bcdboot.
 
 /// Trích phần trăm từ một segment output của DISM (dạng
 /// "[==== 82.0% ====]" hoặc "82.0%") — None nếu segment không mang
@@ -181,7 +170,7 @@ fn main() {
     // diện, không ảnh hưởng luồng cài đặt hay dòng console.
     let ui = ProgressUi::start();
     ui.set_phase("Đang khởi động engine cài đặt", 0);
-    progress::mirror_line("=== QSU WinPEInstall v0.7.18 — engine cài đặt trong WinPE ===");
+    progress::mirror_line("=== QSU WinPEInstall v0.7.19 — engine cài đặt trong WinPE ===");
     let code = run(&ui);
     if code == 0 {
         std::process::exit(0);
@@ -711,29 +700,38 @@ fn run(ui: &ProgressUi) -> i32 {
         // wipeDisk/rebuild: bcdboot PHẢI trỏ vào phân vùng boot MỚI
         // vừa chia (EFI mới ở GPT / System Reserved mới ở MBR),
         // không dùng lại phân vùng EFI cũ như đường preserve.
+        // (Giữ nguyên như các bản trước — đường này đã chạy đúng
+        // ở thực địa v0.7.18.)
         let s_arg = format!("{}:", bl);
         let fw = if uefi { "UEFI" } else { "BIOS" };
         cmd::run_logged(&log, &bcdboot_s, &[&win_arg, "/s", &s_arg, "/f", fw])
             .map(|o| o.code == Some(0))
             .unwrap_or(false)
-    } else if cfg.boot_mode.eq_ignore_ascii_case("UEFI") {
-        match find_efi_letter(&sys::list_fixed_drives()) {
-            Some(efi) => {
-                let s_arg = format!("{}:", efi);
-                cmd::run_logged(&log, &bcdboot_s, &[&win_arg, "/s", &s_arg, "/f", "UEFI"])
-                    .map(|o| o.code == Some(0))
-                    .unwrap_or(false)
+    } else {
+        // preserve (v0.7.19): chốt boot bằng helper DÙNG CHUNG
+        // disk::finalize_boot — tìm phân vùng boot TRÊN CÙNG ĐĨA
+        // với phân vùng Windows theo loại phân vùng (GPT: EFI
+        // System; MBR: System Reserved active, không có thì
+        // chính phân vùng Windows), tự gán ký tự nếu thiếu,
+        // bcdboot + kiểm chứng file boot thật. Thay hẳn
+        // find_efi_letter() cũ (quét thư mục \EFI theo ký tự ổ +
+        // mountvol /s — rủi ro R1, xem chú thích ở disk.rs).
+        match disk::finalize_boot(&log, os_letter, uefi) {
+            Ok(f) => {
+                log.line(&format!(
+                    "Chốt boot preserve xong: phân vùng boot = {}: (đĩa {}, phân vùng #{}{}).",
+                    f.boot_letter,
+                    f.disk_number,
+                    f.boot_partition_number,
+                    if f.self_boot { ", chính là phân vùng Windows" } else { "" }
+                ));
+                true
             }
-            None => {
-                log.line("LỖI: không tìm được phân vùng EFI cho bcdboot.");
+            Err(e) => {
+                log.line(&format!("LỖI: chốt boot (bcdboot) thất bại: {}", e));
                 false
             }
         }
-    } else {
-        let s_arg = format!("{}:", os_letter);
-        cmd::run_logged(&log, &bcdboot_s, &[&win_arg, "/s", &s_arg, "/f", "BIOS"])
-            .map(|o| o.code == Some(0))
-            .unwrap_or(false)
     };
     if !boot_ok {
         log.line("LỖI: bcdboot thất bại. KHÔNG reboot — cần kỹ thuật viên kiểm tra.");

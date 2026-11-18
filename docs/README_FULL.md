@@ -446,8 +446,9 @@ Log riêng của từng module (nếu có) nằm **cạnh file .exe** của modu
   2–13).
 - **Hàm chính**: `find_stage()`, `find_os_drive()`,
   `format_os_partition()`, `run_apply_image()`, `apply_unattend()`,
-  `copy_custom()`, `stage_post_install()`, `find_efi_letter()`,
-  `mount_scratch()`.
+  `copy_custom()`, `stage_post_install()`, `mount_scratch()`;
+  chốt boot preserve bằng `disk::finalize_boot()` dùng chung
+  (v0.7.19 — `find_efi_letter()` đã bị xoá).
 - **An toàn riêng**: nhận diện ổ Data/ổ Windows/đĩa đích **chỉ bằng
   serial**; mọi bất định (không khớp serial, đĩa đích chứa ổ Data,
   không rõ đĩa Data) đều dừng với mã thoát riêng **trước khi ghi
@@ -483,15 +484,21 @@ Log riêng của từng module (nếu có) nằm **cạnh file .exe** của modu
 - **Công nghệ**: Rust + NWG; tự phát hiện môi trường bằng
   `detect_winpe()` (khoá registry `MiniNT` / giá trị `PEBootType`);
   liệt kê volume bằng Win32 gốc (không WMI) và đối chiếu chéo bằng
-  `diskpart list volume`; gắn ISO cần PowerShell (WinPE phải có
-  sẵn); firmware bằng `sys::firmware_is_uefi()`.
+  `diskpart list volume`; gắn ISO bằng **VirtDisk API gốc** qua
+  `qsu_common::iso` (từ v0.7.19 — không còn cần PowerShell);
+  chọn file bằng **trình duyệt file tích hợp** của module (hộp
+  thoại file của Windows không mở được trong WinPE BHT/Anhdv);
+  firmware bằng `sys::firmware_is_uefi()`.
 - **Cơ chế tổ chức**:
   1. Mở module → tự nhận diện WinPE hay Windows thường. Trong WinPE:
      bỏ qua nâng quyền. Windows thường: nâng quyền + hiện chế độ
      Chuẩn bị.
-  2. Chọn nguồn: thư mục chứa `install.wim/.esd/.swm`, hoặc file ISO
-     (gắn bằng PowerShell nếu có; không có PowerShell thì hướng dẫn
-     chọn thẳng file ảnh), hoặc file ảnh trực tiếp. Đọc danh sách
+  2. Chọn nguồn: file ISO (tự mount bằng VirtDisk API qua
+     `qsu_common::iso` — từ v0.7.19; lỗi attach thì thông báo
+     hướng dẫn mount sẵn rồi chọn thẳng file ảnh), hoặc file ảnh
+     trực tiếp. Chọn bằng trình duyệt file tích hợp (liệt kê ổ
+     đĩa, duyệt thư mục, lọc *.iso/*.wim/*.esd/*.swm, tên file
+     đầy đủ) hoặc gõ thẳng đường dẫn vào ô. Đọc danh sách
      edition bằng DISM.
   3. Chọn ổ đích từ danh sách volume đã đối chiếu; các volume chứa
      chính .exe, chứa nguồn, hoặc là ổ ảo của ISO bị **loại mặc
@@ -510,7 +517,12 @@ Log riêng của từng module (nếu có) nằm **cạnh file .exe** của modu
 - **Hàm chính**: `detect_winpe()`, `enumerate_volumes()`,
   `disk_block_reason()`, `volume_serial_of()`, `spawn_install()`,
   `build_unattend()` (bản sao độc lập, cùng quy tắc mật khẩu tuỳ
-  chọn như wizard), `find_efi_letter()` (bản sao độc lập),
+  chọn như wizard; từ v0.7.19 có thêm hai FirstLogonCommands dọn
+  cờ đổi mật khẩu lần đầu), `browser_open()`/`browser_fill()`/
+  `browser_activate()` (trình duyệt file tích hợp, v0.7.19),
+  chốt boot theo phân vùng bằng `disk::finalize_boot()` dùng
+  chung trong qsu_common (v0.7.19 — đã thay `find_efi_letter()`
+  cũ), mount ISO bằng `qsu_common::iso::mount_iso()`,
   cấu trúc `InstallPlan` (chỉ mang `admin_user` +
   `admin_passwordless`, **không mang mật khẩu**).
 - **An toàn riêng**: trước khi ghi, đọc lại serial volume tại chỗ
@@ -521,14 +533,28 @@ Log riêng của từng module (nếu có) nằm **cạnh file .exe** của modu
   | Bước | Thao tác | Kết quả mong đợi |
   |---|---|---|
   | 1 | Chép module vào USB WinPE, boot máy test, chạy module | Mở thẳng giao diện cài (không hộp UAC), nhận diện đúng các volume |
-  | 2 | Chọn nguồn là file ISO trên máy không có PowerShell trong WinPE | Module báo rõ và hướng dẫn chọn thẳng file `install.wim/.esd` |
+  | 2 | Chọn nguồn là file ISO trong WinPE không có PowerShell (BHT/Anhdv) | Module tự mount ISO bằng VirtDisk và liệt kê được các phiên bản (trước v0.7.19: báo ngõ cụt PowerShell) |
+  | 2b | Bấm "Chọn file..." trong WinPE | Trình duyệt file TÍCH HỢP mở ra (không phải hộp thoại Windows), duyệt được ổ/thư mục, thấy tên file đầy đủ, nhấp đúp file là nạp |
+  | 2c | Nạp một nguồn LỖI (đường dẫn sai / ISO hỏng) rồi nạp lại nguồn đúng | Sau lần lỗi các nút bấm lại được ngay (trước v0.7.19 từng kẹt nút "Nạp nguồn", phải mở lại module); lần nạp lại chạy bình thường |
+  | 2d | Cài theo phân vùng (UEFI) khi phân vùng EFI của đĩa đích KHÔNG có ký tự ổ | Bước bcdboot tự gán ký tự cho EFI trên CÙNG đĩa đích và qua được, kiểm chứng có `bootmgfw.efi` + BCD (trước v0.7.19: thất bại, phải chạy bcdboot tay) |
+  | 2e | Boot đầu vào Windows mới sau ca cài có autounattend | AutoLogon vào thẳng desktop — KHÔNG dừng ở màn hình bắt đổi mật khẩu (từ v0.7.19) |
   | 3 | Thử chọn ổ chứa chính module làm đích | Ổ bị loại mặc định; bỏ loại trừ bằng checkbox thì chọn được (volume), nhưng đĩa chứa module vẫn bị cấm ở chế độ wipe |
   | 4 | Bật format, gõ sai serial volume | Bị chặn, không format |
   | 5 | Cài thử lên ổ phụ với format tắt | DISM chạy, có unattend, `bcdboot` xong, nút Khởi động lại bật |
   | 6 | Chạy module trên Windows thường | Hiện chế độ "Chuẩn bị": chép module + WinPEInstall.exe ra gốc ổ chọn |
 
-- **Trạng thái kiểm thử thực tế**: **chưa kiểm chứng trên máy thật**
-  (chưa từng chạy trong WinPE thật; xem HUONG-DAN v0.6).
+- **Trạng thái kiểm thử thực tế**: **ĐÃ chạy trong WinPE thật**
+  (2026-11-18, DESKTOP-704R89L, WinPE USB BHT/Anhdv): nạp nguồn
+  `F:\sources\install.wim` của ISO gốc (11 phiên bản), cài theo
+  phân vùng lên C: với format — DISM apply đạt 100%; bước
+  bcdboot của bản cũ THẤT BẠI (phân vùng EFI không có ký tự ổ —
+  đã sửa ở v0.7.19 bằng `disk::finalize_boot()`), kỹ thuật viên
+  chốt boot bằng tay (`bcdboot C:\Windows /s S: /f UEFI`) và
+  Windows gốc boot vào "Getting ready" → desktop (dừng một lần
+  ở màn hình đổi mật khẩu — cũng đã sửa ở v0.7.19). Các lỗi
+  chọn file/mount ISO/kẹt nút cùng buổi test đó đều là đầu vào
+  của v0.7.19; các bản sửa v0.7.19 **chưa** được kiểm chứng lại
+  trên máy thật — xem 4 ca test ưu tiên trong HUONG-DAN v0.7.19.
 
 ### 3.5. Sao lưu / Khôi phục Driver — `BackupRestoreDriver.exe`
 
@@ -1256,11 +1282,16 @@ Luồng chạy trong WinPE (hàm `run()` của `winpe_install/src/main.rs`):
 10. Tạo boot bằng `bcdboot`:
     - wipe/rebuild: `/s <phân vùng boot mới> /f UEFI|BIOS` theo
       `bootMode`.
-    - preserve UEFI: `find_efi_letter()` — ổ đầu tiên có thư mục
-      `\EFI` ở gốc; không thấy thì `mountvol /s` lần lượt lên S:/Z:/R:
-      rồi `/f UEFI`. (Heuristic này là rủi ro R1 của rà soát UEFI:
-      máy nhiều phân vùng ESP có thể chọn nhầm.)
-    - preserve Legacy: `/s <ổ Windows>: /f BIOS`.
+    - preserve (từ v0.7.19): `disk::finalize_boot()` dùng chung —
+      tìm phân vùng boot TRÊN CÙNG ĐĨA với phân vùng Windows
+      theo loại phân vùng (GPT: EFI System theo GUID; MBR:
+      System Reserved active, không có thì chính phân vùng
+      Windows), thiếu ký tự ổ thì tự gán (`ensure_boot_letter`),
+      `bcdboot /f UEFI|BIOS`, rồi kiểm chứng file boot thật
+      (`bootmgfw.efi` + `BCD` / `bootmgr` + `Boot\BCD`); thử
+      lại một lần; lỗi mang theo output của bcdboot. (Đường cũ
+      `find_efi_letter()` — quét thư mục `\EFI` theo ký tự ổ +
+      `mountvol /s` — đã bị xoá; đó là rủi ro R1, đã đóng.)
     - `bcdboot` lỗi → **thoát 9 và KHÔNG khởi động lại** (để người
       tại chỗ còn đọc được log/màn hình).
 11. Thành công: `wpeutil reboot`; chỉ khi `wpeutil` lỗi mới dùng
@@ -1399,17 +1430,23 @@ nguồn và rà soát tĩnh:
   thấy hoạt động qua hộp xác nhận trên VM ở v0.7.2).
 - Chế độ **rebuild** của v0.7.13 (gồm `execute_rebuild()` và mã
   thoát 13): chưa chạy lần nào ngoài biên dịch + rà soát.
-- Module `CaiDatWinWinPE.exe` trong WinPE thật (v0.6 → nay).
+- Module `CaiDatWinWinPE.exe`: ĐÃ chạy trong WinPE thật lần đầu
+  2026-11-18 (xem trạng thái ở §3.4) — các bản sửa v0.7.19 rút
+  ra từ buổi đó chưa được kiểm chứng lại.
 - Cả 6 module v0.3 (BackupRestoreDriver bản Rust, TatBitlocker,
   SaoLuuWifi, DonRacMayTinh, QuanLyUpdateWindows, PhimTatBIOS) và
   `TuyChinhWindows.exe` (v0.4 → nay).
 - Các bản v0.7.11, v0.7.12, v0.7.13 của wizard: chưa phát hành chạy
   thực địa lần nào (bản thực địa gần nhất là v0.7.9 trên
   DESKTOP-704R89L và v0.7.6 trên DESKTOP-J8LPB75).
-- Rủi ro còn mở từ rà soát UEFI (`docs/kiem_tra_uefi_v0.7.8.md`):
-  **R1** — `find_efi_letter()` (ở cả engine và CaiDatWinWinPE) nhận
-  diện phân vùng ESP bằng dấu hiệu có thư mục `\EFI` ở gốc ổ; máy
-  có nhiều phân vùng ESP có thể chọn nhầm. **R2** — phía WinPE,
+- Rủi ro từ rà soát UEFI (`docs/kiem_tra_uefi_v0.7.8.md`):
+  **R1 — ĐÃ ĐÓNG ở v0.7.19**: `find_efi_letter()` (ở cả engine
+  và CaiDatWinWinPE) từng nhận diện phân vùng ESP bằng dấu hiệu
+  có thư mục `\EFI` ở gốc ổ — không thấy EFI chưa có ký tự ổ và
+  có thể chọn nhầm ESP của đĩa khác; ca thực địa 2026-11-18 đã
+  xác nhận hậu quả (bcdboot thất bại sau apply 100%). Cả hai
+  nơi nay dùng `disk::finalize_boot()` — đối chiếu theo đĩa +
+  loại phân vùng. **R2** — phía WinPE,
   firmware được dò bằng một API duy nhất (`firmware_is_uefi()`),
   kém dự phòng hơn probe hai API của wizard. Kết luận của rà soát
   UEFI: đường UEFI đã viết đúng, không có lỗi chặn; Secure Boot
@@ -1576,6 +1613,7 @@ Mỗi phiên bản một dòng, theo `BUILD_NOTES.md` và các gói phát hành
 | v0.7.16 | 2026-11-18 | **Engine tự gán ký tự ổ cho phân vùng boot sau khi chia** (`disk::ensure_boot_letter()` trong `qsu_common`, dùng chung cho `execute_wipe()` và `execute_rebuild()`): sửa ca thực địa `winpe-20261117-1811.log` — bản repack v0.7.15 đã đưa được engine lên, diskpart wipe báo thành công mọi bước kể cả `assign letter=S`, nhưng liệt kê sau wipe thấy phân vùng EFI không có ký tự ổ và bước xác minh cũ huỷ toàn bộ ca cài ngay sau bước phá huỷ. Nay phân vùng boot thiếu ký tự thì engine tự gán (ưu tiên `S:`, diskpart phụ / `SetVolumeMountPointW`, thử lại 1 lần) và chốt bằng probe truy cập thật đường dẫn gốc; chỉ dừng khi phân vùng vắng mặt hẳn hoặc gán + probe đều thất bại. |
 | v0.7.17 | 2026-11-18 | **Mount ISO ba lớp trong wizard** + **UX xác nhận serial**: sửa ca thực địa trên máy Windows lite — "Đọc ISO" với ISO gốc báo "Mount-DiskImage không trả ký tự ổ đĩa (output: )" rỗng vì đường mount cũ chỉ dựa vào một lệnh PowerShell và lỗi cmdlet bị nuốt. Nay `mount_iso()` dùng lại mount có sẵn → PowerShell với lỗi ép terminating và hiện nguyên văn → dự phòng VirtDisk API gốc (ký tự ổ dò bằng hiệu tập volume); `dismount_iso()` gỡ đối xứng theo sổ đăng ký mount. Vùng xác nhận serial (cả wipeDisk/rebuild): thêm dòng định danh đĩa đích đầy đủ ngay trên ô nhập + nhãn phản hồi khớp/chưa khớp trực tiếp theo từng ký tự (cùng `normalize_disk_serial` như chốt chặn lúc bấm TIẾN HÀNH) + danh sách đĩa xổ xuống rộng 780px để không cắt serial. Chỉ wizard thay đổi; engine giữ nguyên. |
 | v0.7.18 | 2026-11-18 | **Hiển thị tiến trình trong WinPE**: sửa ca thực địa `winpe-20261117-1852.log` — engine chạy khoẻ (ensure_boot_letter tự gán T:, DISM bung ảnh tới 82%) nhưng bị tưởng là treo và bị tắt nguồn vì không có bề mặt hiển thị nào: cửa sổ không xuất hiện trong PE của ISO mod, console launcher trống vì engine chỉ ghi file log. Nay engine có hai bề mặt: (1) console của `qsu_start.cmd` là bề mặt CHÍNH — Logger gắn sink in mọi dòng log thẳng ra console, giai đoạn in dòng riêng, % bung ảnh cập nhật tại chỗ bằng dòng `\r` nhờ `cmd::run_streaming_progress()` mới (cắt output DISM ở cả `\r`/`\n`); `qsu_start.cmd` không đổi. (2) Màn hình tiến trình toàn màn hình tông xanh tự vẽ bằng GDI (theo màn hình mẫu của tool gốc, thương hiệu bản rebuild) là bề mặt PHỤ — mở trước mọi công việc trên luồng riêng, gồm bước hiện tại + số % lớn + thanh tiến trình + đồng hồ `mm:ss` chạy từng giây + đường dẫn log; % ngoài bước bung ảnh là tiến độ tổng thể theo giai đoạn, trong bước bung ảnh là % trực tiếp của DISM. Khi lỗi engine neo lại trong WinPE giữ lỗi trên cả hai bề mặt (mã thoát chuyển thành giá trị trả về của `run()`, logic cài đặt không đổi). Wizard chỉ đổi nội dung tab Tài liệu (mục 11 mới). |
+| v0.7.19 | 2026-11-18 | **Chốt boot cùng đĩa cho đường preserve + module WinPE tự mount ISO / trình duyệt file tích hợp / chống kẹt nút + dọn cờ đổi mật khẩu**: sửa 4 lỗi từ buổi test thực địa cùng ngày trên DESKTOP-704R89L (WinPE USB BHT, cài ISO gốc theo phân vùng). (1) `disk::finalize_boot()` mới trong qsu_common, nối vào CaiDatWinWinPE (theo phân vùng) và engine preserve: tìm phân vùng boot TRÊN CÙNG ĐĨA với phân vùng Windows theo loại phân vùng (GPT: EFI System; MBR: System Reserved active), tự gán ký tự bằng `ensure_boot_letter`, bcdboot + kiểm chứng file boot thật, thử lại 1 lần, lỗi kèm output của bcdboot; xoá cả hai bản sao `find_efi_letter()` (đóng rủi ro R1 — ca thực địa: apply 100% nhưng bcdboot thất bại vì EFI của SSD không có ký tự ổ, phải chạy bcdboot tay). (2) Module WinPE mount ISO bằng VirtDisk API qua module mới `qsu_common::iso` — bỏ hẳn ngõ cụt "không có PowerShell/cmdlet Storage"; lỗi attach có hướng dẫn dự phòng mount sẵn + chọn thẳng `sources\install.*`. (3) Trình duyệt file TÍCH HỢP thay `nwg::FileDialog` (hộp thoại Windows không mở được trong WinPE BHT): liệt kê ổ đĩa, duyệt thư mục, lọc *.iso/*.wim/*.esd/*.swm, tên đầy đủ, hai chế độ file/thư mục; ô gõ đường dẫn giữ nguyên. Chống kẹt nút: luồng nền nạp nguồn/liệt kê bọc `catch_unwind` (busy luôn được nhả), hộp thoại trong `refresh()` trì hoãn sau `set_busy_ui()`. (4) `build_unattend()` ở cả wizard và module WinPE thêm hai FirstLogonCommands (`net user <Admin> /logonpasswordchg:no` + `Set-LocalUser -PasswordNeverExpires`) dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu" (pwdLastSet=0) — ca thực địa AutoLogon bị chặn ở màn hình đổi mật khẩu; áp dụng cả khi mật khẩu trống, kèm dòng `[Cơ chế]` ở cả hai nơi sinh. Wizard thêm mục 12 vào tab Tài liệu. |
 
 ---
 
