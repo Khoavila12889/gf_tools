@@ -1,0 +1,4 @@
+interface:
+  display_name: "Golden Farm Windows Tools"
+  short_description: "Phát triển, sửa lỗi và đóng gói bộ công cụ Windows"
+  default_prompt: "Dùng $gf-wintools để đọc dự án, chẩn đoán lỗi và sửa module Windows theo README và mã nguồn hiện tại."
