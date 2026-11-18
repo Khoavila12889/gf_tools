@@ -1197,6 +1197,21 @@ Luồng chạy trong WinPE (hàm `run()` của `winpe_install/src/main.rs`):
      extent, hoặc không rõ đĩa Data → **thoát 13** (mọi trường hợp
      đều dừng **trước khi đụng vào đĩa**); `execute_rebuild()` lỗi
      → **thoát 13**.
+   - **Tự gán ký tự ổ cho phân vùng boot (từ v0.7.16, cả wipeDisk
+     và rebuild)**: sau khi diskpart chia xong, `execute_wipe()` /
+     `execute_rebuild()` đối chiếu layout thật; phân vùng boot
+     (EFI/System Reserved) khớp theo đĩa + loại phân vùng, và nếu
+     nó thiếu ký tự ổ — hoặc liệt kê báo có mà truy cập thử không
+     được — `disk::ensure_boot_letter()` TỰ gán (ưu tiên `S:`;
+     script diskpart phụ `select partition`/`assign`, dự phòng
+     `SetVolumeMountPointW` theo tên volume khớp (đĩa, offset);
+     thử tối đa 2 lần) và chốt bằng probe thật `GetFileAttributesW`
+     trên đường dẫn gốc — liệt kê volume hiện ký tự KHÔNG được
+     tính là thành công. Chỉ dừng (thoát 12/13 như cũ) khi phân
+     vùng boot vắng mặt hẳn trong layout mới hoặc gán + probe đều
+     thất bại. Sửa ca thực địa `winpe-20261117-1811.log`: diskpart
+     báo gán `S` thành công, exit 0, nhưng EFI vẫn không có ký tự
+     và bản cũ huỷ toàn bộ ca cài ngay sau bước xoá đĩa.
 5. Bung ảnh: DISM `/Apply-Image` (streaming, có `/SWMFile` nếu ảnh
    chia nhỏ) → lỗi **thoát 8**.
 6. Inject driver từ `staging\Drivers`, rồi từ v0.7.14 thêm từ
@@ -1530,6 +1545,7 @@ Mỗi phiên bản một dòng, theo `BUILD_NOTES.md` và các gói phát hành
 | v0.7.13 | 2026-11-17 | Chế độ phân vùng **rebuild** cho máy 1 đĩa (giữ phân vùng dữ liệu, `stage.json` thêm `rebuildPartitions`, engine thêm mã thoát 13); rà soát phát hiện lỗi hằng số checkbox `0x400` ở các module cũ và lỗi driver sao lưu không tới được engine. |
 | v0.7.14 | 2026-11-17 | Sửa hai lỗi trên: hằng số checkbox `0x400` → `0x4` ở 4 module (Tuỳ Chỉnh Windows, Dọn Rác, Backup/Restore Driver, Sao Lưu Wifi); engine inject thêm driver đã sao lưu từ `QSU-DriverBackup` trên ổ Data (đọc `driverBackupRel`, kiểm tra tên tương đối an toàn). |
 | v0.7.15 | 2026-11-18 | **Đóng gói lại WinPE thành WIM một ảnh bootable** trong wizard (`repack_winpe_single_image()`, mốc 69%): sau khi inject, xuất riêng index đã inject bằng `/Export-Image /Bootable /Compress:Max` rồi thay `winpe.wim` — sửa ca thực địa 2026-11-17 winload nạp nhầm ảnh Windows Setup vì WIM hai-ảnh không có Boot Index chỉ định ảnh PE. Không khôi phục cổng kiểm chứng DISM-text đã gỡ ở v0.7.11. |
+| v0.7.16 | 2026-11-18 | **Engine tự gán ký tự ổ cho phân vùng boot sau khi chia** (`disk::ensure_boot_letter()` trong `qsu_common`, dùng chung cho `execute_wipe()` và `execute_rebuild()`): sửa ca thực địa `winpe-20261117-1811.log` — bản repack v0.7.15 đã đưa được engine lên, diskpart wipe báo thành công mọi bước kể cả `assign letter=S`, nhưng liệt kê sau wipe thấy phân vùng EFI không có ký tự ổ và bước xác minh cũ huỷ toàn bộ ca cài ngay sau bước phá huỷ. Nay phân vùng boot thiếu ký tự thì engine tự gán (ưu tiên `S:`, diskpart phụ / `SetVolumeMountPointW`, thử lại 1 lần) và chốt bằng probe truy cập thật đường dẫn gốc; chỉ dừng khi phân vùng vắng mặt hẳn hoặc gán + probe đều thất bại. |
 
 ---
 

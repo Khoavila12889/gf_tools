@@ -35,9 +35,11 @@ use winapi::shared::guiddef::GUID;
 use winapi::shared::minwindef::DWORD;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::fileapi::{
-    CreateFileW, FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetVolumeInformationW,
-    GetVolumePathNamesForVolumeNameW, OPEN_EXISTING,
+    CreateFileW, FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetFileAttributesW,
+    GetLogicalDrives, GetVolumeInformationW, GetVolumePathNamesForVolumeNameW,
+    INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
 };
+use winapi::um::winbase::SetVolumeMountPointW;
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::ioapiset::DeviceIoControl;
 use winapi::um::winioctl::{
@@ -1174,8 +1176,240 @@ pub fn wipe_script(disk_number: u32, layout: &WipeLayout, uefi: bool) -> String 
     }
 }
 
-/// Kết quả sau wipe: ký tự ổ THẬT (đã xác minh bằng liệt kê) của các
-/// phân vùng mới trên đĩa đích.
+/// ---------------------------------------------------------------------------
+/// Tự gán ký tự ổ cho phân vùng boot sau khi chia lại (v0.7.16)
+///
+/// Bài học thực địa (winpe-20261117-1811.log, ca wipe trên
+/// DESKTOP-704R89L): script diskpart chạy thành công MỌI bước, kể cả
+/// dòng "assign letter=S" — DiskPart báo "successfully assigned the
+/// drive letter", exit 0. Nhưng liệt kê sau wipe bằng IOCTL cho thấy
+/// phân vùng EFI "SYSTEM" KHÔNG có ký tự ổ (hai phân vùng Windows/
+/// Recovery thì có). Bước xác minh cũ đòi phân vùng boot phải có ký
+/// tự ổ nên huỷ TOÀN BỘ ca cài — ngay sau bước phá huỷ (đĩa đã xoá
+/// trắng, chia layout mới) và trước khi bung ảnh: máy mất Windows cũ,
+/// không có Windows mới, không boot được gì.
+///
+/// Nguyên tắc rút ra: một bước kiểm tra nằm SAU thao tác phá huỷ
+/// phải TỰ CHỮA được lỗi nó phát hiện, không chỉ báo lỗi rồi dừng.
+/// Từ v0.7.16, khi phân vùng boot đã đối chiếu được trong layout
+/// mới mà thiếu ký tự ổ (hoặc ký tự liệt kê báo có nhưng probe
+/// không truy cập được), engine tự gán ký tự rồi PROBE THẬT đường
+/// dẫn gốc "X:\" — chỉ dừng khi phân vùng boot vắng mặt hẳn trong
+/// layout, hoặc gán + probe đều thất bại sau khi thử lại.
+/// ---------------------------------------------------------------------------
+
+/// Probe THẬT một ký tự ổ: GetFileAttributesW trên đường dẫn gốc
+/// "X:\". Đây là tiêu chí thành công duy nhất khi gán ký tự — việc
+/// ký tự có/không xuất hiện trong liệt kê volume không chứng minh
+/// được volume đã mount truy cập được thật (đúng ca lỗi 1811).
+fn probe_drive_root(letter: char) -> bool {
+    let root = format!("{}:\\", letter);
+    let w = sys::wide(&root);
+    unsafe { GetFileAttributesW(w.as_ptr()) != INVALID_FILE_ATTRIBUTES }
+}
+
+/// Ký tự ổ có đang bị chiếm không: danh sách `reserved` của lần chạy
+/// (ký tự đã chốt cho phân vùng khác), bitmask GetLogicalDrives,
+/// và probe thực tế (bitmask trong WinPE có thể trễ — probe là
+/// chốt cuối).
+fn drive_letter_taken(letter: char, reserved: &[char]) -> bool {
+    if reserved.contains(&letter) {
+        return true;
+    }
+    let mask = unsafe { GetLogicalDrives() };
+    if mask & (1u32 << (letter as u32 - 'A' as u32)) != 0 {
+        return true;
+    }
+    probe_drive_root(letter)
+}
+
+/// Chọn ký tự ổ trống: ưu tiên ký tự script diskpart đã định gán
+/// ('S' cho phân vùng boot), sau đó quét T..Z rồi D..R.
+fn pick_free_letter(preferred: char, reserved: &[char]) -> Option<char> {
+    if !drive_letter_taken(preferred, reserved) {
+        return Some(preferred);
+    }
+    let mut candidates: Vec<char> = ('T'..='Z').collect();
+    candidates.extend('D'..='R');
+    candidates.into_iter().find(|c| !drive_letter_taken(*c, reserved))
+}
+
+/// Cơ chế gán 1: script diskpart phụ (select disk / select
+/// partition / assign letter) — cùng mẫu ghi log nguyên văn với
+/// các script chia đĩa. `part_ordinal` là số thứ tự phân vùng mà
+/// diskpart nhìn thấy (PartitionNumber của layout IOCTL).
+fn assign_letter_diskpart(log: &Arc<Logger>, disk_number: u32, part_ordinal: u32, letter: char) -> bool {
+    let script = format!(
+        "select disk {}\r\nselect partition {}\r\nassign letter={}\r\nexit\r\n",
+        disk_number, part_ordinal, letter
+    );
+    log.line("  --- diskpart script gán ký tự (nguyên văn) ---");
+    for line in script.lines() {
+        log.line(&format!("  | {}", line));
+    }
+    log.line("  --- hết script ---");
+    let script_path = std::env::temp_dir().join("qsu_assign_letter.txt");
+    if let Err(e) = std::fs::write(&script_path, &script) {
+        log.line(&format!("  gán ký tự (diskpart): không ghi được file script: {}", e));
+        return false;
+    }
+    let sp = script_path.to_string_lossy().into_owned();
+    match cmd::run_logged(log, "diskpart", &["/s", &sp]) {
+        Ok(out) => out.code == Some(0),
+        Err(e) => {
+            log.line(&format!("  gán ký tự (diskpart): không chạy được diskpart: {}", e));
+            false
+        }
+    }
+}
+
+/// Tên volume (\\?\Volume{GUID}\) của phân vùng tại (số đĩa,
+/// offset) — quét FindFirstVolumeW + extent, cùng cách
+/// enumerate_volume_matches gắn volume vào phân vùng. Dùng cho cơ
+/// chế gán dự phòng qua SetVolumeMountPointW.
+fn find_volume_name(disk_number: u32, offset: u64) -> Option<String> {
+    unsafe {
+        let mut name_buf = vec![0u16; 1024];
+        let find = FindFirstVolumeW(name_buf.as_mut_ptr(), name_buf.len() as DWORD);
+        if find == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut found = None;
+        loop {
+            let volume_path = sys::from_wide(&name_buf);
+            if let Some((d, off, _)) = volume_extent(&volume_path) {
+                if d == disk_number && off == offset {
+                    found = Some(volume_path);
+                    break;
+                }
+            }
+            for v in name_buf.iter_mut() {
+                *v = 0;
+            }
+            if FindNextVolumeW(find, name_buf.as_mut_ptr(), name_buf.len() as DWORD) == 0 {
+                break;
+            }
+        }
+        FindVolumeClose(find);
+        found
+    }
+}
+
+/// Cơ chế gán 2 (dự phòng): SetVolumeMountPointW trực tiếp trên
+/// volume của phân vùng — bỏ qua diskpart khi diskpart báo thành
+/// công mà mount không hiệu lực (đúng ca lỗi 1811).
+fn assign_letter_mountpoint(log: &Arc<Logger>, disk_number: u32, part: &DiskPartition, letter: char) -> bool {
+    let name = match find_volume_name(disk_number, part.offset) {
+        Some(n) => n,
+        None => {
+            log.line(&format!(
+                "  gán ký tự (mountpoint): không tìm thấy tên volume của phân vùng tại đĩa {} offset {}",
+                disk_number, part.offset
+            ));
+            return false;
+        }
+    };
+    let mount = sys::wide(&format!("{}:\\", letter));
+    let vol = sys::wide(&name);
+    let ok = unsafe { SetVolumeMountPointW(mount.as_ptr(), vol.as_ptr()) } != 0;
+    if ok {
+        log.line(&format!(
+            "  gán ký tự (mountpoint): SetVolumeMountPointW {}:\\ ← {} — OK",
+            letter, name
+        ));
+    } else {
+        log.line(&format!(
+            "  gán ký tự (mountpoint): SetVolumeMountPointW {}:\\ ← {} thất bại (GetLastError={})",
+            letter,
+            name,
+            unsafe { GetLastError() }
+        ));
+    }
+    ok
+}
+
+/// Bảo đảm phân vùng boot ĐÃ ĐỐI CHIẾU ĐƯỢC trên đĩa đích có một
+/// ký tự ổ DÙNG ĐƯỢC THẬT (v0.7.16 — xem khối chú thích ở trên).
+/// - Phân vùng có sẵn ký tự và probe đạt → trả ký tự đó.
+/// - Thiếu ký tự (hoặc có mà probe không đạt) → tự gán: ký tự ưu
+///   tiên 'S', loại trừ `reserved`; mỗi lần thử chạy cả hai cơ chế
+///   (diskpart, rồi SetVolumeMountPointW) và chốt bằng probe thật;
+///   thử tối đa 2 lần.
+/// - Err chỉ khi không còn ký tự trống, hoặc cả 2 lần thử đều
+///   không cho đường dẫn truy cập được.
+pub fn ensure_boot_letter(
+    log: &Arc<Logger>,
+    disk_number: u32,
+    part: &DiskPartition,
+    part_ordinal: u32,
+    preferred: char,
+    reserved: &[char],
+) -> Result<char, String> {
+    log.line(&format!(
+        "Phân vùng boot khớp trên đĩa {}: phân vùng #{} (số thứ tự diskpart {}) — {} — {} — ký tự theo liệt kê: {}",
+        disk_number,
+        part.number,
+        part_ordinal,
+        part.kind.label_vi(),
+        sys::format_gb(part.size),
+        part.letter
+            .map(|c| format!("{}:", c))
+            .unwrap_or_else(|| "(chưa có)".to_string())
+    ));
+    if let Some(l) = part.letter {
+        if probe_drive_root(l) {
+            log.line(&format!("  probe {}:\\ — truy cập được, dùng ký tự này.", l));
+            return Ok(l);
+        }
+        log.line(&format!(
+            "  CẢNH BÁO: liệt kê báo phân vùng boot có ký tự {}: nhưng probe {}:\\ thất bại — tự gán lại ký tự.",
+            l, l
+        ));
+    }
+    let letter = pick_free_letter(preferred, reserved).ok_or_else(|| {
+        "không còn ký tự ổ trống nào để gán cho phân vùng boot".to_string()
+    })?;
+    log.line(&format!(
+        "  ký tự sẽ gán cho phân vùng boot: {}: (ưu tiên '{}'; loại trừ: {})",
+        letter,
+        preferred,
+        if reserved.is_empty() {
+            "(không có)".to_string()
+        } else {
+            reserved.iter().map(|c| format!("{}:", c)).collect::<Vec<_>>().join(", ")
+        }
+    ));
+    for attempt in 1..=2u32 {
+        log.line(&format!("  tự gán ký tự {}: — lần thử {}/2...", letter, attempt));
+        let via_diskpart = assign_letter_diskpart(log, disk_number, part_ordinal, letter);
+        let via_mountpoint = if probe_drive_root(letter) {
+            false
+        } else {
+            assign_letter_mountpoint(log, disk_number, part, letter)
+        };
+        let probe = probe_drive_root(letter);
+        log.line(&format!(
+            "  lần thử {}: diskpart={}, mountpoint={}, probe {}:\\={}",
+            attempt, via_diskpart, via_mountpoint, letter, probe
+        ));
+        if probe {
+            log.line(&format!(
+                "  ✓ tự gán ký tự thành công: phân vùng boot = {}: (lần thử {})",
+                letter, attempt
+            ));
+            return Ok(letter);
+        }
+    }
+    Err(format!(
+        "phân vùng boot trên đĩa {} (phân vùng #{}) vẫn không có ký tự ổ dùng được sau 2 lần tự gán (ký tự đã thử: {}:)",
+        disk_number, part.number, letter
+    ))
+}
+
+/// Kết quả sau wipe/rebuild: ký tự ổ THẬT của các phân vùng mới
+/// trên đĩa đích — phân vùng Windows/Recovery xác minh bằng liệt
+/// kê, phân vùng boot chốt bằng probe đường dẫn thật sau khi tự
+/// gán ký tự nếu thiếu (v0.7.16, xem ensure_boot_letter).
 #[derive(Debug, Clone)]
 pub struct WipeResult {
     pub windows_letter: char,
@@ -1258,9 +1492,9 @@ pub fn execute_wipe(
         .ok_or_else(|| format!("sau diskpart không liệt kê lại được đĩa {}", disk_number))?;
     log.line(&format!("Đĩa {} sau wipe:\n{}", disk_number, disk.describe_partitions()));
     let mut windows: Option<char> = None;
-    let mut boot: Option<char> = None;
+    let mut boot_part: Option<(usize, DiskPartition)> = None;
     let mut recovery: Option<char> = None;
-    for p in &disk.partitions {
+    for (idx, p) in disk.partitions.iter().enumerate() {
         if p.label.eq_ignore_ascii_case("Windows") {
             // Đối chiếu thêm dung lượng cho chắc (sai lệch < 10%)
             let expect = layout.windows_mb * MB;
@@ -1270,10 +1504,10 @@ pub fn execute_wipe(
         }
         if uefi {
             if p.kind == PartKind::Efi {
-                boot = p.letter;
+                boot_part = Some((idx, p.clone()));
             }
         } else if p.label.eq_ignore_ascii_case("System Reserved") || p.kind == PartKind::System {
-            boot = p.letter;
+            boot_part = Some((idx, p.clone()));
         }
         if p.label.eq_ignore_ascii_case("Recovery") || p.kind == PartKind::Recovery {
             recovery = p.letter;
@@ -1282,9 +1516,26 @@ pub fn execute_wipe(
     let windows_letter = windows.ok_or_else(|| {
         "sau wipe không tìm thấy phân vùng Windows (nhãn 'Windows') có ký tự ổ trên đĩa đích".to_string()
     })?;
-    let boot_letter = boot.ok_or_else(|| {
-        "sau wipe không tìm thấy phân vùng boot (EFI/System Reserved) có ký tự ổ trên đĩa đích".to_string()
-    })?;
+    // Phân vùng boot: chỉ vắng mặt hẳn trong layout mới mới là lỗi
+    // cứng; có mặt mà thiếu ký tự ổ thì TỰ GÁN (v0.7.16 — ca lỗi
+    // winpe-20261117-1811: diskpart báo assign thành công nhưng EFI
+    // vẫn không có ký tự, bản cũ dừng ngay sau bước phá huỷ).
+    let boot_letter = match boot_part {
+        None => {
+            return Err(
+                "sau wipe không tìm thấy phân vùng boot (EFI/System Reserved) trên đĩa đích".to_string(),
+            )
+        }
+        Some((idx, p)) => {
+            let ordinal = if p.number > 0 { p.number } else { idx as u32 + 1 };
+            let mut reserved: Vec<char> = vec![windows_letter];
+            if let Some(r) = recovery {
+                reserved.push(r);
+            }
+            ensure_boot_letter(log, disk_number, &p, ordinal, 'S', &reserved)
+                .map_err(|e| format!("sau wipe: {}", e))?
+        }
+    };
     log.line(&format!(
         "Xác minh sau wipe: Windows = {}:, Boot = {}:, Recovery = {}",
         windows_letter,
@@ -1627,9 +1878,9 @@ pub fn execute_rebuild(
         p.offset + MB >= region_start && p.offset < region_end.saturating_add(MB)
     };
     let mut windows: Option<char> = None;
-    let mut boot: Option<char> = None;
+    let mut boot_part: Option<(usize, DiskPartition)> = None;
     let mut recovery: Option<char> = None;
-    for p in disk.partitions.iter().filter(|p| in_region(p)) {
+    for (idx, p) in disk.partitions.iter().enumerate().filter(|(_, p)| in_region(p)) {
         if p.label.eq_ignore_ascii_case("Windows") {
             let expect = layout.windows_mb * MB;
             if p.size.abs_diff(expect) <= expect / 10 {
@@ -1638,10 +1889,10 @@ pub fn execute_rebuild(
         }
         if uefi {
             if p.kind == PartKind::Efi {
-                boot = p.letter;
+                boot_part = Some((idx, p.clone()));
             }
         } else if p.label.eq_ignore_ascii_case("System Reserved") || p.kind == PartKind::System {
-            boot = p.letter;
+            boot_part = Some((idx, p.clone()));
         }
         if p.label.eq_ignore_ascii_case("Recovery") || p.kind == PartKind::Recovery {
             recovery = p.letter;
@@ -1650,9 +1901,25 @@ pub fn execute_rebuild(
     let windows_letter = windows.ok_or_else(|| {
         "sau rebuild không tìm thấy phân vùng Windows mới (nhãn 'Windows') có ký tự ổ trong vùng vừa chia".to_string()
     })?;
-    let boot_letter = boot.ok_or_else(|| {
-        "sau rebuild không tìm thấy phân vùng boot mới (EFI/System Reserved) có ký tự ổ trong vùng vừa chia".to_string()
-    })?;
+    // Phân vùng boot mới: vắng mặt hẳn trong vùng vừa chia mới là
+    // lỗi cứng; có mặt mà thiếu ký tự ổ thì TỰ GÁN (v0.7.16 — cùng
+    // cơ chế tự chữa như wipe, xem ensure_boot_letter).
+    let boot_letter = match boot_part {
+        None => {
+            return Err(
+                "sau rebuild không tìm thấy phân vùng boot mới (EFI/System Reserved) trong vùng vừa chia".to_string(),
+            )
+        }
+        Some((idx, p)) => {
+            let ordinal = if p.number > 0 { p.number } else { idx as u32 + 1 };
+            let mut reserved: Vec<char> = vec![windows_letter];
+            if let Some(r) = recovery {
+                reserved.push(r);
+            }
+            ensure_boot_letter(log, disk_number, &p, ordinal, 'S', &reserved)
+                .map_err(|e| format!("sau rebuild: {}", e))?
+        }
+    };
     log.line(&format!(
         "Xác minh sau rebuild: Windows = {}:, Boot = {}:, Recovery = {}",
         windows_letter,

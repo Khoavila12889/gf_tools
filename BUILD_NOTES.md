@@ -1299,6 +1299,89 @@ reboot vào WinPE để engine cài thật.
   Build release sạch (0 lỗi, 0 cảnh báo). **Chưa test trên
   máy thật** — ca test quyết định là ca 1 trong HUONG-DAN.
 
+## v0.7.16 — Engine tự gán ký tự ổ cho phân vùng boot sau khi chia (2026-11-18)
+
+- **Chẩn đoán từ log thực địa** `winpe-20261117-1811.log`
+  (chạy v0.7.15 trên DESKTOP-704R89L, ISO mod, chế độ
+  wipeDisk, đích = SSD Gigabyte serial SN192808960256): bản
+  repack WIM một ảnh của v0.7.15 ĐÃ CÓ TÁC DỤNG — WinPE boot
+  đúng engine, engine tìm thấy staging theo marker + serial,
+  đối chiếu lại serial đĩa đích, chạy script wipe (select
+  disk 1, clean, convert gpt, EFI 260MB assign letter=S,
+  MSR 16MB, Windows 61559MB assign W, Recovery 600MB
+  assign R, set id + gpt attributes) — DiskPart báo thành
+  công MỌI bước kể cả "successfully assigned the drive
+  letter", exit 0. Nhưng liệt kê sau wipe (dòng 65–69 của
+  log) thấy đủ 4 phân vùng đúng loại/nhãn/dung lượng, W: và
+  R: có ký tự, còn phân vùng EFI "SYSTEM" thì **không có ký
+  tự ổ**. Bước xác minh sau wipe đòi phân vùng boot phải có
+  ký tự nên huỷ toàn bộ ca cài (dòng 70) — NGAY SAU bước phá
+  huỷ và TRƯỚC khi bung ảnh. Hiện trạng máy khớp log: SSD có
+  layout mới, phân vùng Windows trống rỗng, không gì boot
+  được.
+- **Bản sửa (crate qsu_common — `disk.rs`):** helper mới
+  `ensure_boot_letter()` dùng chung cho cả `execute_wipe()`
+  và `execute_rebuild()` (rebuild có bản sao cùng lỗi ở khối
+  xác minh sau chia — sửa luôn cả hai, cùng một helper nên
+  hành vi thống nhất):
+  1. Phân vùng boot được khớp từ liệt kê IOCTL theo số đĩa +
+     loại phân vùng (GPT: EFI System; MBR: System Reserved/
+     cờ boot) — chính dữ kiện liệt kê đã nhận diện đúng trong
+     log 1811.
+  2. Có ký tự sẵn và probe đạt → dùng luôn. Thiếu ký tự (hoặc
+     liệt kê báo có mà probe không truy cập được) → TỰ GÁN:
+     ký tự ưu tiên 'S' như script chia đĩa đã định (loại trừ
+     ký tự đã chốt cho Windows/Recovery và mọi ký tự đang
+     bận theo GetLogicalDrives + probe); cơ chế 1 = script
+     diskpart phụ (`select disk N` / `select partition
+     <PartitionNumber>` / `assign letter=X`, ghi log nguyên
+     văn như các script khác); cơ chế 2 dự phòng =
+     `SetVolumeMountPointW` với tên volume tìm bằng quét
+     FindFirstVolumeW + extent khớp (đĩa, offset).
+  3. Tiêu chí thành công DUY NHẤT là probe thật:
+     `GetFileAttributesW("X:\")` truy cập được — ký tự hiện
+     hay không trong liệt kê volume không tính. Mỗi lần gán
+     đều probe lại; thất bại thì thử lại 1 lần nữa.
+  4. Chỉ Err khi: phân vùng boot vắng mặt hẳn trong layout
+     sau chia, hết ký tự trống, hoặc cả 2 lần gán + probe
+     đều thất bại. Mọi bước đều ghi log: phân vùng khớp (đĩa,
+     số thứ tự, loại, dung lượng), ký tự trước/sau, cơ chế
+     nào chạy, kết quả probe từng lần.
+  Mọi thứ còn lại giữ nguyên hành vi: đối chiếu serial, nội
+  dung script wipe/rebuild, ký tự định hướng S/W/R, các bước
+  sau (bung ảnh, inject driver, bcdboot `/s <boot>`, chép
+  WinRE) dùng ký tự boot đã chốt như trước. Module
+  CaiDatWinWinPE (cài tương tác trong WinPE) cũng gọi
+  `execute_wipe()` nên hưởng cùng bản sửa.
+- **Bài học thiết kế (ghi để các bản sau noi theo):** một
+  bước kiểm tra nằm SAU thao tác phá huỷ (xoá đĩa) thì phải
+  TỰ CHỮA được lỗi nó phát hiện — hoặc ít nhất không được
+  biến một lỗi sửa được (thiếu ký tự ổ) thành huỷ toàn bộ
+  ca cài khi đĩa đã trắng. Kiểm tra "cứng" chỉ dành cho các
+  điều kiện nằm TRƯỚC điểm phá huỷ (serial, đối chiếu phân
+  vùng, đủ chỗ...) — những kiểm tra đó giữ nguyên.
+- **Tài liệu:** tab "Tài liệu" mục 7 thêm gạch đầu dòng "Tự
+  gán ký tự ổ cho phân vùng boot sau khi chia";
+  `docs/co_che_v0.7.16.md` = bản sao của co_che_v0.7.15.md
+  + thay đổi trên (đã đối chiếu thân tài liệu khớp từng chữ
+  với TAI_LIEU_TEXT); README_FULL §4.11 thêm đoạn mô tả
+  `ensure_boot_letter()` + dòng lịch sử v0.7.16;
+  HUONG-DAN.txt có mục v0.7.16 + ca test ưu tiên (lặp lại
+  đúng kịch bản wipe trên DESKTOP-704R89L → engine phải qua
+  được bước phân vùng boot, bung ảnh, đăng ký boot và
+  reboot vào OOBE của Windows mới).
+- Gói: `~/workspace/UtilityRebuild-v0.7.16.zip` (10.037.752
+  byte, 16 file, testzip sạch; drop_v0.7.16 = drop_v0.7.15
+  + engine `WinPEInstall.exe` build lại (1.688.742 byte,
+  md5 `1fd87006…`), wizard `CaiDatWinTuDong.exe` (3.048.053
+  byte, md5 `94f62196…` — chỉ đổi chữ tab Tài liệu) và
+  `CaiDatWinWinPE.exe` (2.795.696 byte, md5 `4679cded…` —
+  cùng gọi execute_wipe) + HUONG-DAN.txt cập nhật — 10
+  file còn lại byte-identical với v0.7.15, đã đối chứng md5
+  từng file trong zip khớp bản trong drop). Build release
+  sạch (0 lỗi, 0 cảnh báo). **Chưa test trên máy thật** —
+  ca test quyết định là ca ưu tiên trong HUONG-DAN.
+
 ## Khác biệt có chủ đích so với bản gốc
 
 - Không cổng key bản quyền, không biến môi trường "token" khóa module.
