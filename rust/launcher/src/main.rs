@@ -206,25 +206,8 @@ fn modules_dir() -> PathBuf {
     dir.join("modules")
 }
 
-fn info_box(title: &str, content: &str) {
-    let p = nwg::MessageParams {
-        title,
-        content,
-        buttons: nwg::MessageButtons::Ok,
-        icons: nwg::MessageIcons::Info,
-    };
-    nwg::message(&p);
-}
-
-fn error_box(title: &str, content: &str) {
-    let p = nwg::MessageParams {
-        title,
-        content,
-        buttons: nwg::MessageButtons::Ok,
-        icons: nwg::MessageIcons::Error,
-    };
-    nwg::message(&p);
-}
+// Hộp thoại chuẩn lấy từ qsu_common::ui (docs/chuan_giao_dien.md).
+use qsu_common::ui::{error_box, info_box};
 
 /// Chạy một module với quyền Administrator; báo rõ nếu module chưa được build
 fn start_module(index: usize) {
@@ -271,8 +254,10 @@ fn apply_search_filter(state: &AppState) {
     let category = state.category.get();
     let mut rc: RECT = unsafe { std::mem::zeroed() };
     unsafe { GetClientRect(state.window.hwnd().unwrap(), &mut rc); }
-    let cell_w = (rc.right - 40) / 4;
-    let cell_h = (rc.bottom - HEADER_H - FOOTER_H) / 8;
+    // Cùng công thức ô lưới với lúc dựng (lề chuẩn 16, khe 12):
+    // hai đường tính phải khớp nhau để nút không nhảy vị trí sau lọc.
+    let cell_w = (rc.right - 32) / 4;
+    let cell_h = (rc.bottom - HEADER_H - FOOTER_H - 20) / 8;
     let order: Vec<usize> = if query.is_empty() && category == 0 {
         FREQUENT.to_vec()
     } else { (0..MODULES.len()).collect() };
@@ -287,8 +272,8 @@ fn apply_search_filter(state: &AppState) {
         };
         if visible {
             let btn = &state.buttons[i];
-            btn.set_position(20 + (count % 4) * cell_w, HEADER_H + (count / 4) * cell_h);
-            btn.set_size((cell_w - 8) as u32, (cell_h - 8) as u32);
+            btn.set_position(16 + (count % 4) * cell_w + 6, HEADER_H + 10 + (count / 4) * cell_h + 6);
+            btn.set_size((cell_w - 12) as u32, (cell_h - 12) as u32);
             btn.set_visible(true);
             count += 1;
         }
@@ -306,43 +291,11 @@ fn apply_search_filter(state: &AppState) {
 // Dựng giao diện
 // ---------------------------------------------------------------------------
 fn build_ui() -> (nwg::Window, Rc<AppState>) {
-    // --- Font ---
-    let mut font_title = Default::default();
-    nwg::Font::builder()
-        .family("Segoe UI")
-        .size(21)
-        .weight(700)
-        .build(&mut font_title)
-        .expect("font title");
-
-    let mut font_normal = Default::default();
-    nwg::Font::builder()
-        .family("Segoe UI")
-        .size(15)
-        .build(&mut font_normal)
-        .expect("font normal");
-
-    let mut font_small = Default::default();
-    nwg::Font::builder()
-        .family("Segoe UI")
-        .size(14)
-        .build(&mut font_small)
-        .expect("font small");
-
-    let mut font_button = Default::default();
-    nwg::Font::builder()
-        .family("Segoe UI")
-        .size(15)
-        .weight(700)
-        .build(&mut font_button)
-        .expect("font button");
-
-    // Font phải sống lâu bằng cửa sổ: cố ý "rò" các font (quy mô launcher,
-    // tiến trình kết thúc cùng cửa sổ) để đơn giản hoá vòng đời.
-    let font_title = Box::leak(Box::new(font_title));
-    let font_normal = Box::leak(Box::new(font_normal));
-    let font_small = Box::leak(Box::new(font_small));
-    let font_button = Box::leak(Box::new(font_button));
+    // --- Font chuẩn dùng chung (qsu_common::ui) ---
+    let font_title = qsu_common::ui::font_title();
+    let font_normal = qsu_common::ui::font_normal();
+    let font_small = qsu_common::ui::font_small();
+    let font_button = qsu_common::ui::font_button();
 
     // --- Cửa sổ chính ---
     let mut window = Default::default();
@@ -353,6 +306,7 @@ fn build_ui() -> (nwg::Window, Rc<AppState>) {
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::MINIMIZE_BOX)
         .build(&mut window)
         .expect("window");
+    qsu_common::ui::set_window_icon(&window);
 
     // Kích thước vùng client thực tế (sau khi trừ viền + thanh tiêu đề)
     let (client_w, client_h) = {
@@ -376,12 +330,12 @@ fn build_ui() -> (nwg::Window, Rc<AppState>) {
         lbl
     };
 
-    // --- Header ---
-    let _lbl_title = add_label("Utility Rebuild", font_title, (18, 10), (420, 34));
+    // --- Header (toạ độ chuẩn: tiêu đề (16,8), phụ đề (16,40)) ---
+    let _lbl_title = add_label("Utility Rebuild", font_title, (16, 8), (560, 30));
     let _lbl_sub = add_label(
         "Chọn công cụ để bắt đầu công việc",
         font_normal,
-        (20, 50),
+        (16, 40),
         (440, 22),
     );
     let pc_name = env::var("COMPUTERNAME").unwrap_or_default();
@@ -395,9 +349,9 @@ fn build_ui() -> (nwg::Window, Rc<AppState>) {
     let _lbl_sys = add_label(&sys_text, font_small, (client_w - 400, 14), (382, 44));
 
     // --- Lưới 32 nút chức năng: 4 cột x 8 hàng ---
-    let grid_x0 = 14;
+    let grid_x0 = 16;
     let grid_y0 = HEADER_H + 10;
-    let grid_x1 = client_w - 14;
+    let grid_x1 = client_w - 16;
     let grid_y1 = client_h - FOOTER_H - 10;
     let cell_w = (grid_x1 - grid_x0) / 4;
     let cell_h = (grid_y1 - grid_y0) / 8;
@@ -428,7 +382,7 @@ fn build_ui() -> (nwg::Window, Rc<AppState>) {
 
     // --- Footer: tìm kiếm + Xoá + Giới thiệu ---
     let footer_y = 78;
-    let _lbl_search = add_label("Tìm kiếm :", font_normal, (14, footer_y + 15), (84, 24));
+    let _lbl_search = add_label("Tìm kiếm :", font_normal, (16, footer_y + 15), (84, 24));
 
     let mut search = Default::default();
     nwg::TextInput::builder()
@@ -437,8 +391,8 @@ fn build_ui() -> (nwg::Window, Rc<AppState>) {
         .parent(&window)
         .build(&mut search)
         .expect("search");
-    search.set_position(100, footer_y + 11);
-    search.set_size(470, 32);
+    search.set_position(100, footer_y + 13);
+    search.set_size(470, 28);
 
     let mut btn_clear = Default::default();
     nwg::Button::builder()
@@ -457,21 +411,21 @@ fn build_ui() -> (nwg::Window, Rc<AppState>) {
         .parent(&window)
         .build(&mut btn_about)
         .expect("btn about");
-    btn_about.set_position(client_w - 124, client_h - 42);
+    btn_about.set_position(client_w - 126, client_h - 42);
     btn_about.set_size(110, 32);
 
     let mut categories = Vec::new();
     for (i, name) in CATEGORIES.iter().enumerate() {
         let mut button = nwg::Button::default();
         nwg::Button::builder().text(name).font(Some(font_normal)).parent(&window)
-            .position((20 + i as i32 * 152, 140)).size((144, 36))
+            .position((16 + i as i32 * 152, 140)).size((144, 32))
             .build(&mut button).expect("category");
         categories.push(button);
     }
-    let summary = add_label("", font_button, (20, 188), ((client_w - 40) as u32, 28));
+    let summary = add_label("", font_button, (16, 188), ((client_w - 32) as u32, 28));
     let hint = add_label("Tìm theo tên hoặc công việc, có thể gõ không dấu.", font_small, (100, 116), (700, 20));
     let footer = add_label("Trạng thái công cụ dựa trên file module trong gói đang mở.", font_small,
-        (20, client_h - 34), (740, 24));
+        (16, client_h - 34), (740, 24));
     let state = Rc::new(AppState {
         buttons,
         search,

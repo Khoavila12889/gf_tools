@@ -16,3 +16,4 @@ pub mod sha256;
 pub mod stage;
 pub mod svc;
 pub mod sys;
+pub mod ui;

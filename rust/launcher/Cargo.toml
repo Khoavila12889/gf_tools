@@ -6,5 +6,6 @@ description = "Utility Rebuild - cửa sổ chính (launcher) viết bằng Rust
 
 [dependencies]
 native-windows-gui = "1.0"
+qsu_common = { path = "../qsu_common" }
 unicode-normalization = "0.1"
 winapi = { version = "0.3", features = ["shellapi", "winuser", "winreg", "winerror", "wingdi", "winnt", "commctrl"] }

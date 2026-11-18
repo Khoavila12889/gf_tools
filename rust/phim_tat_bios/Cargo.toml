@@ -9,6 +9,7 @@ name = "PhimTatBIOS"
 path = "src/main.rs"
 
 [dependencies]
+qsu_common = { path = "../qsu_common" }
 native-windows-gui = "1.0"
 unicode-normalization = "0.1"
 winapi = { version = "0.3", features = ["shellapi", "winuser", "winerror", "wingdi", "winnt", "commctrl"] }

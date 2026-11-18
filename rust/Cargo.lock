@@ -103,6 +103,7 @@ name = "launcher"
 version = "0.1.0"
 dependencies = [
  "native-windows-gui",
+ "qsu_common",
  "unicode-normalization",
  "winapi",
 ]
@@ -158,6 +159,7 @@ name = "phim_tat_bios"
 version = "0.1.0"
 dependencies = [
  "native-windows-gui",
+ "qsu_common",
  "unicode-normalization",
  "winapi",
 ]
@@ -199,6 +201,7 @@ dependencies = [
 name = "qsu_common"
 version = "0.1.0"
 dependencies = [
+ "native-windows-gui",
  "winapi",
 ]
 

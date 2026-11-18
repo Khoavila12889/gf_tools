@@ -534,18 +534,9 @@ fn spawn_clean(app: &Rc<App>, chosen: Vec<CleanItem>) {
 }
 
 fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
-    let mut f_title = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(21).weight(700).build(&mut f_title).expect("font");
-    let mut f_normal = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).build(&mut f_normal).expect("font");
-    let mut f_small = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(14).build(&mut f_small).expect("font");
-    let mut f_button = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).weight(700).build(&mut f_button).expect("font");
-    let f_title = Box::leak(Box::new(f_title));
-    let f_normal = Box::leak(Box::new(f_normal));
-    let f_small = Box::leak(Box::new(f_small));
-    let f_button = Box::leak(Box::new(f_button));
+    let f_normal = qsu_common::ui::font_normal();
+    let f_mono = qsu_common::ui::font_mono();
+    let f_button = qsu_common::ui::font_button();
 
     let mut window = Default::default();
     nwg::Window::builder()
@@ -555,6 +546,7 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::MINIMIZE_BOX)
         .build(&mut window)
         .expect("window");
+    qsu_common::ui::set_window_icon(&window);
 
     let (client_w, client_h) = {
         let mut rc: RECT = unsafe { std::mem::zeroed() };
@@ -570,10 +562,10 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         lbl
     };
 
-    let _t = add_label("Dọn Rác Máy Tính", f_title, (16, 8), (360, 30));
-    let _s = add_label(
+    let (_t, _s) = qsu_common::ui::add_header(
+        &window,
+        "Dọn Rác Máy Tính",
         "Quét dung lượng từng hạng mục, tick chọn rồi dọn — không đụng vào tài liệu cá nhân",
-        f_normal, (16, 40), (640, 22),
     );
 
     let mut list = Default::default();
@@ -609,6 +601,7 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
     let btn_all = mk_btn("Chọn tất cả", (132, btn_y), (120, 32));
     let btn_none = mk_btn("Bỏ chọn", (260, btn_y), (100, 32));
     let btn_clean = mk_btn("Dọn rác", (client_w - 164, btn_y), (150, 32));
+    qsu_common::ui::make_primary(&btn_clean);
     let lbl_total = add_label("Đã chọn: 0 B", f_normal, (372, btn_y + 6), (220, 22));
 
     let lbl_status = add_label("Đang khởi tạo...", f_normal, (14, btn_y + 42), ((client_w - 28) as u32, 22));
@@ -616,7 +609,7 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
     let mut txt_log = Default::default();
     nwg::TextBox::builder()
         .text("")
-        .font(Some(f_small))
+        .font(Some(f_mono))
         .parent(&window)
         .flags(nwg::TextBoxFlags::VISIBLE | nwg::TextBoxFlags::VSCROLL | nwg::TextBoxFlags::AUTOVSCROLL)
         .build(&mut txt_log)

@@ -335,18 +335,9 @@ fn spawn_decrypt(app: &Rc<App>, vol: BlVol) {
 }
 
 fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
-    let mut f_title = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(21).weight(700).build(&mut f_title).expect("font");
-    let mut f_normal = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).build(&mut f_normal).expect("font");
-    let mut f_small = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(14).build(&mut f_small).expect("font");
-    let mut f_button = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).weight(700).build(&mut f_button).expect("font");
-    let f_title = Box::leak(Box::new(f_title));
-    let f_normal = Box::leak(Box::new(f_normal));
-    let f_small = Box::leak(Box::new(f_small));
-    let f_button = Box::leak(Box::new(f_button));
+    let f_normal = qsu_common::ui::font_normal();
+    let f_small = qsu_common::ui::font_small();
+    let f_button = qsu_common::ui::font_button();
 
     let mut window = Default::default();
     nwg::Window::builder()
@@ -356,6 +347,7 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::MINIMIZE_BOX)
         .build(&mut window)
         .expect("window");
+    qsu_common::ui::set_window_icon(&window);
 
     let (client_w, client_h) = {
         let mut rc: RECT = unsafe { std::mem::zeroed() };
@@ -371,12 +363,8 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         lbl
     };
 
-    let _t = add_label("Tắt BitLocker", f_title, (16, 8), (300, 30));
-    let _s = add_label(
-        "Xem trạng thái mã hoá các ổ đĩa và tắt BitLocker (giải mã) khi cần",
-        f_normal, (16, 40), (600, 22),
-    );
-    let _l1 = add_label("Các ổ đĩa cố định:", f_normal, (14, HEADER_H + 12), (300, 22));
+    let (_t, _s) = qsu_common::ui::add_header(&window, "Tắt BitLocker", "Xem trạng thái mã hoá các ổ đĩa và tắt BitLocker (giải mã) khi cần");
+    let _l1 = add_label("Các ổ đĩa cố định:", f_normal, (16, HEADER_H + 12), (300, 22));
 
     let mut list = Default::default();
     nwg::ListView::builder()
@@ -387,8 +375,8 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         .build(&mut list)
         .expect("listview");
     list.set_headers_enabled(true);
-    list.set_position(14, HEADER_H + 38);
-    list.set_size((client_w - 28) as u32, 190);
+    list.set_position(16, HEADER_H + 38);
+    list.set_size((client_w - 32) as u32, 190);
     for (i, (name, w)) in [
         ("Ổ", 50),
         ("Nhãn", 140),
@@ -416,20 +404,21 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         b.set_size(size.0, size.1);
         b
     };
-    let btn_refresh = mk_btn("Làm mới", (14, btn_y), (110, 34));
-    let btn_off = mk_btn("Tắt BitLocker cho ổ đã chọn", (134, btn_y), (260, 34));
+    let btn_refresh = mk_btn("Làm mới", (16, btn_y), (110, 34));
+    let btn_off = mk_btn("Tắt BitLocker cho ổ đã chọn", (136, btn_y), (260, 34));
+    qsu_common::ui::make_primary(&btn_off);
 
     let _warn = add_label(
         "CẢNH BÁO: Tắt BitLocker sẽ GIẢI MÃ toàn bộ ổ đĩa (mất từ vài phút tới vài giờ). Trong lúc giải mã TUYỆT ĐỐI không tắt máy, không rút nguồn. Sau khi tắt, dữ liệu trên ổ không còn được bảo vệ bằng mã hoá.",
         f_small,
-        (14, btn_y + 46),
-        ((client_w - 28) as u32, 44),
+        (16, btn_y + 46),
+        ((client_w - 32) as u32, 44),
     );
     let lbl_status = add_label(
         "Đang khởi tạo...",
         f_small,
-        (14, client_h - 28),
-        ((client_w - 28) as u32, 22),
+        (16, client_h - 28),
+        ((client_w - 32) as u32, 22),
     );
 
     let mut notice = Default::default();

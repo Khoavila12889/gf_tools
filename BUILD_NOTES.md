@@ -1691,6 +1691,67 @@ reboot vào WinPE để engine cài thật.
   **Chưa test trên máy thật** — ca test quyết định là 4
   ca ưu tiên trong HUONG-DAN.
 
+## v0.7.20 — Chuẩn hoá giao diện toàn bộ: một design system trong qsu_common::ui, icon đủ 32/32 (2026-11-18)
+
+Bản **chỉ đổi lớp giao diện** theo yêu cầu "chuẩn — từ launcher
+cho đến module, icon — phù hợp, tối ưu, đẹp": hành vi, luồng
+công việc, cổng an toàn, nội dung chữ và cơ chế hậu cài/Telegram
+của 114c02e giữ nguyên 100%. Chuẩn đầy đủ + tổng kết rà soát
+từng cửa sổ nằm ở `docs/chuan_giao_dien.md`.
+
+- **Design system mới `qsu_common::ui`** (crate qsu_common thêm
+  phụ thuộc native-windows-gui): sáu font chuẩn dạng getter
+  (Segoe UI 21/700 title, 17/700 section, 15 normal, 14 small,
+  15/700 button, Consolas 14 mono — đúng bộ số thực địa từ
+  v0.5, nay một nguồn duy nhất thay cho 10 bản sao chép tay);
+  token bố cục (MARGIN 16, GAP 8, HEADER_H 72, BUTTON_H 32,
+  INPUT_H 28); `add_header()` (tiêu đề (16,8) + phụ đề (16,40)
+  font_normal); `set_window_icon()` (icon chung `qsu.ico`
+  16/24/32/48 nhúng trong qsu_common — nền bo góc thép xanh +
+  cửa sổ 4 ô trắng); `make_primary()` (viền nút mặc định
+  BS_DEFPUSHBUTTON cho đúng một nút chính mỗi cửa sổ); hộp
+  thoại chuẩn info/error/confirm gom về một nơi.
+- **Icon launcher đủ 32/32:** 9 glyph của 114c02e giữ nguyên
+  toạ độ; 23 glyph mới vẽ cùng ngôn ngữ (nét 2px, mực thép
+  xanh RGB(40,93,145), nền đen-khoá-trong-suốt, 32×32, không
+  chữ). Nguồn sinh mới `packaging/draw-icons.py` (Pillow)
+  tái sinh cả 32 BMP (đúng định dạng 4150 byte) + qsu.ico;
+  `icons.rs` ánh xạ đủ 32 file module.
+- **Launcher:** font/header theo chuẩn; lưới nút dùng một
+  công thức chung cho lúc dựng và lúc lọc tìm kiếm (trước
+  lệch nhau ~9px); ô tìm kiếm cao 28; nút danh mục cao 32;
+  icon cửa sổ; hộp thoại lấy từ `ui`.
+- **Từng module:** font + header chuẩn + icon cửa sổ ở
+  Backup/Restore Driver, Tắt BitLocker, Sao Lưu Wifi, Dọn
+  Rác, Quản Lý Update, Phím Tắt BIOS (thêm phụ thuộc
+  qsu_common), Tuỳ Chỉnh Windows, module WinPE (cả cửa sổ
+  trình duyệt file; nhãn mode dời (16,58)→(16,64) tránh
+  chồng phụ đề chuẩn); wizard chỉ gom font + icon (header/
+  hình học do engine bố cục riêng sở hữu — ngoại lệ ghi
+  trong chuẩn). Ô log kỹ thuật về Consolas ở Dọn Rác (các
+  module khác đã mono sẵn). Hàng nút hành động đồng đều
+  cao 32 ở Quản Lý Update, Backup Driver, Tuỳ Chỉnh
+  Windows. Mỗi cửa sổ một nút chính: Backup, Tắt BitLocker,
+  Xuất hồ sơ (Wifi), Dọn rác, Bật cập nhật tự động, Áp dụng
+  mục đã tick, BẮT ĐẦU CÀI ĐẶT — tất cả đều đã qua hộp xác
+  nhận/phân quyền sẵn có trước khi thực thi.
+- **Không đổi:** engine WinPEInstall (không sửa mã nguồn —
+  màn tiến trình toàn màn hình v0.7.18 giữ nguyên thiết kế;
+  binary build lại vì thư viện chung mở rộng nên md5 khác
+  và kích thước tăng do liên kết thêm NWG qua qsu_common),
+  mọi logic cài đặt/đĩa/ISO/unattend, tab Tài liệu/Hướng
+  dẫn của wizard (đã rà: hai văn bản chỉ mô tả cơ chế/quy
+  trình, không mô tả diện mạo wizard — không cần sửa, giữ
+  nguyên quy tắc khớp từng chữ với docs/co_che_v0.7.19.md).
+- Gói: `~/workspace/UtilityRebuild-v0.7.20.zip`; drop_v0.7.20
+  build mới **cả 11 exe** (bản giao diện nên mọi exe đều
+  đổi). Build release sạch (0 lỗi, 0 cảnh báo). **Chưa test
+  trên máy thật** — ca test là mở launcher + từng module
+  kiểm mắt: header/icon/nút chính/ô log đúng chuẩn, lưới
+  launcher đủ 32 icon, và chạy thử một luồng quen thuộc
+  (ví dụ ca cài theo phân vùng của v0.7.19) để chắc chắn
+  hành vi không đổi.
+
 ## Khác biệt có chủ đích so với bản gốc
 
 - Không cổng key bản quyền, không biến môi trường "token" khóa module.

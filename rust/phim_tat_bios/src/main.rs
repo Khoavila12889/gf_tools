@@ -89,15 +89,8 @@ fn refill_list(app: &App) {
 }
 
 fn build_ui() -> (nwg::Window, Rc<App>) {
-    let mut f_title = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(21).weight(700).build(&mut f_title).expect("font");
-    let mut f_normal = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).build(&mut f_normal).expect("font");
-    let mut f_small = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(14).build(&mut f_small).expect("font");
-    let f_title = Box::leak(Box::new(f_title));
-    let f_normal = Box::leak(Box::new(f_normal));
-    let f_small = Box::leak(Box::new(f_small));
+    let f_normal = qsu_common::ui::font_normal();
+    let f_small = qsu_common::ui::font_small();
 
     let mut window = Default::default();
     nwg::Window::builder()
@@ -107,6 +100,7 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::MINIMIZE_BOX)
         .build(&mut window)
         .expect("window");
+    qsu_common::ui::set_window_icon(&window);
 
     let (client_w, client_h) = {
         let mut rc: RECT = unsafe { std::mem::zeroed() };
@@ -122,11 +116,7 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
         lbl
     };
 
-    let _t = add_label("Phím Tắt BIOS / Boot Menu", f_title, (16, 8), (420, 30));
-    let _s = add_label(
-        "Tra cứu phím vào BIOS/UEFI và Boot Menu theo hãng máy",
-        f_normal, (16, 40), (520, 22),
-    );
+    let (_t, _s) = qsu_common::ui::add_header(&window, "Phím Tắt BIOS / Boot Menu", "Tra cứu phím vào BIOS/UEFI và Boot Menu theo hãng máy");
     let _ls = add_label("Tìm hãng:", f_normal, (14, HEADER_H + 14), (76, 22));
 
     let mut search = Default::default();

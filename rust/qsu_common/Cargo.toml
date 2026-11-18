@@ -5,6 +5,7 @@ edition = "2021"
 description = "Thư viện dùng chung cho các module QSU (log, lệnh ngoài, JSON tối giản, SHA-256, thông tin hệ thống)"
 
 [dependencies]
+native-windows-gui = "1.0"
 winapi = { version = "0.3", features = [
     "errhandlingapi",
     "fileapi",

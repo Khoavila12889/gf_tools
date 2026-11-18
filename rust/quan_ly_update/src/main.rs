@@ -375,21 +375,10 @@ fn action_reset(logger: &Logger) -> String {
 }
 
 fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
-    let mut f_title = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(21).weight(700).build(&mut f_title).expect("font");
-    let mut f_normal = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).build(&mut f_normal).expect("font");
-    let mut f_small = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(14).build(&mut f_small).expect("font");
-    let mut f_button = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).weight(700).build(&mut f_button).expect("font");
-    let mut f_mono = Default::default();
-    nwg::Font::builder().family("Consolas").size(14).build(&mut f_mono).expect("font");
-    let f_title = Box::leak(Box::new(f_title));
-    let f_normal = Box::leak(Box::new(f_normal));
-    let f_small = Box::leak(Box::new(f_small));
-    let f_button = Box::leak(Box::new(f_button));
-    let f_mono = Box::leak(Box::new(f_mono));
+    let f_normal = qsu_common::ui::font_normal();
+    let f_small = qsu_common::ui::font_small();
+    let f_button = qsu_common::ui::font_button();
+    let f_mono = qsu_common::ui::font_mono();
 
     let mut window = Default::default();
     nwg::Window::builder()
@@ -399,6 +388,7 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::MINIMIZE_BOX)
         .build(&mut window)
         .expect("window");
+    qsu_common::ui::set_window_icon(&window);
 
     let (client_w, client_h) = {
         let mut rc: RECT = unsafe { std::mem::zeroed() };
@@ -414,10 +404,10 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         lbl
     };
 
-    let _t = add_label("Quản Lý Update Windows", f_title, (16, 8), (400, 30));
-    let _s = add_label(
+    let (_t, _s) = qsu_common::ui::add_header(
+        &window,
+        "Quản Lý Update Windows",
         "Bật/tắt cập nhật tự động, kiểm tra cập nhật và đặt lại thành phần Windows Update",
-        f_normal, (16, 40), (700, 22),
     );
     let _l1 = add_label("Trạng thái dịch vụ:", f_normal, (14, HEADER_H + 12), (300, 22));
 
@@ -449,11 +439,12 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         b.set_size(size.0, size.1);
         b
     };
-    let btn_refresh = mk_btn("Làm mới", (14, btn_y), (90, 34));
-    let btn_enable = mk_btn("Bật cập nhật tự động", (112, btn_y), (170, 34));
-    let btn_disable = mk_btn("Tắt cập nhật", (290, btn_y), (120, 34));
-    let btn_check = mk_btn("Kiểm tra cập nhật ngay", (418, btn_y), (180, 34));
-    let btn_reset = mk_btn("Đặt lại Windows Update", (606, btn_y), (190, 34));
+    let btn_refresh = mk_btn("Làm mới", (14, btn_y), (90, 32));
+    let btn_enable = mk_btn("Bật cập nhật tự động", (112, btn_y), (170, 32));
+    qsu_common::ui::make_primary(&btn_enable);
+    let btn_disable = mk_btn("Tắt cập nhật", (290, btn_y), (120, 32));
+    let btn_check = mk_btn("Kiểm tra cập nhật ngay", (418, btn_y), (180, 32));
+    let btn_reset = mk_btn("Đặt lại Windows Update", (606, btn_y), (190, 32));
 
     let log_y = btn_y + 46;
     let _l2 = add_label("Nhật ký thao tác:", f_normal, (14, log_y), (300, 22));

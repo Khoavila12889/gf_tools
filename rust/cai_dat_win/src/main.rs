@@ -3587,22 +3587,12 @@ struct App {
 }
 
 fn build_ui() -> (nwg::Window, Rc<App>) {
-    // --- Fonts (rò có chủ đích như launcher: sống cùng tiến trình) ---
-    let mut f_title = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(21).weight(700).build(&mut f_title).expect("font");
-    let mut f_section = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(17).weight(700).build(&mut f_section).expect("font");
-    let mut f_normal = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).build(&mut f_normal).expect("font");
-    let mut f_small = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(14).build(&mut f_small).expect("font");
-    let mut f_button = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).weight(700).build(&mut f_button).expect("font");
-    let font_title = Box::leak(Box::new(f_title));
-    let font_section = Box::leak(Box::new(f_section));
-    let font_normal = Box::leak(Box::new(f_normal));
-    let font_small = Box::leak(Box::new(f_small));
-    let font_button = Box::leak(Box::new(f_button));
+    // --- Fonts: chuẩn dùng chung qsu_common::ui (v0.7.20) ---
+    let font_title = qsu_common::ui::font_title();
+    let font_section = qsu_common::ui::font_section();
+    let font_normal = qsu_common::ui::font_normal();
+    let font_small = qsu_common::ui::font_small();
+    let font_button = qsu_common::ui::font_button();
 
     // --- Cửa sổ ---
     let mut window = Default::default();
@@ -3613,6 +3603,7 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::MINIMIZE_BOX)
         .build(&mut window)
         .expect("window");
+    qsu_common::ui::set_window_icon(&window);
     // Kích thước client ở bản thiết kế gốc: cửa sổ vừa tạo đúng theo
     // thông số thiết kế v0.7.10 (ngoài 1036x748) nên số đo này là
     // mốc "thiết kế" cho bố cục thích ứng — xem `adapt_window_frame`

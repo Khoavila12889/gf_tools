@@ -428,18 +428,9 @@ fn pick_folder(title: &str) -> Option<PathBuf> {
 }
 
 fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
-    let mut f_title = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(21).weight(700).build(&mut f_title).expect("font");
-    let mut f_normal = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).build(&mut f_normal).expect("font");
-    let mut f_small = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(14).build(&mut f_small).expect("font");
-    let mut f_button = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).weight(700).build(&mut f_button).expect("font");
-    let f_title = Box::leak(Box::new(f_title));
-    let f_normal = Box::leak(Box::new(f_normal));
-    let f_small = Box::leak(Box::new(f_small));
-    let f_button = Box::leak(Box::new(f_button));
+    let f_normal = qsu_common::ui::font_normal();
+    let f_small = qsu_common::ui::font_small();
+    let f_button = qsu_common::ui::font_button();
 
     let mut window = Default::default();
     nwg::Window::builder()
@@ -449,6 +440,7 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::MINIMIZE_BOX)
         .build(&mut window)
         .expect("window");
+    qsu_common::ui::set_window_icon(&window);
 
     let (client_w, client_h) = {
         let mut rc: RECT = unsafe { std::mem::zeroed() };
@@ -464,12 +456,8 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         lbl
     };
 
-    let _t = add_label("Sao Lưu / Quản Lý Wifi", f_title, (16, 8), (400, 30));
-    let _s = add_label(
-        "Sao lưu, khôi phục hồ sơ Wifi kèm mật khẩu và xem mật khẩu đã lưu",
-        f_normal, (16, 40), (600, 22),
-    );
-    let _l1 = add_label("Hồ sơ Wifi đã lưu trên máy:", f_normal, (14, HEADER_H + 12), (300, 22));
+    let (_t, _s) = qsu_common::ui::add_header(&window, "Sao Lưu / Quản Lý Wifi", "Sao lưu, khôi phục hồ sơ Wifi kèm mật khẩu và xem mật khẩu đã lưu");
+    let _l1 = add_label("Hồ sơ Wifi đã lưu trên máy:", f_normal, (16, HEADER_H + 12), (300, 22));
 
     let mk_list = |pos: (i32, i32), size: (u32, u32), cols: &[(&str, i32)]| -> nwg::ListView {
         let mut lv = Default::default();
@@ -495,8 +483,8 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
     };
 
     let list = mk_list(
-        (14, HEADER_H + 38),
-        ((client_w - 28) as u32, 200),
+        (16, HEADER_H + 38),
+        ((client_w - 32) as u32, 200),
         &[("Tên Wifi (SSID)", 300), ("File hồ sơ", 470)],
     );
     lv_enable_checkboxes(&list);
@@ -509,26 +497,27 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         b.set_size(size.0, size.1);
         b
     };
-    let btn_refresh = mk_btn("Làm mới", (14, btn_y), (100, 32));
-    let btn_all = mk_btn("Chọn tất cả", (122, btn_y), (110, 32));
-    let btn_none = mk_btn("Bỏ chọn", (240, btn_y), (90, 32));
-    let btn_export = mk_btn("Xuất hồ sơ", (338, btn_y), (120, 32));
-    let btn_import = mk_btn("Nhập hồ sơ", (466, btn_y), (120, 32));
-    let btn_keys = mk_btn("Xem mật khẩu", (594, btn_y), (140, 32));
+    let btn_refresh = mk_btn("Làm mới", (16, btn_y), (100, 32));
+    let btn_all = mk_btn("Chọn tất cả", (124, btn_y), (110, 32));
+    let btn_none = mk_btn("Bỏ chọn", (242, btn_y), (90, 32));
+    let btn_export = mk_btn("Xuất hồ sơ", (340, btn_y), (120, 32));
+    let btn_import = mk_btn("Nhập hồ sơ", (468, btn_y), (120, 32));
+    let btn_keys = mk_btn("Xem mật khẩu", (596, btn_y), (140, 32));
+    qsu_common::ui::make_primary(&btn_export);
 
     let keys_y = btn_y + 44;
-    let _l2 = add_label("Mật khẩu đã lưu:", f_normal, (14, keys_y), (300, 22));
+    let _l2 = add_label("Mật khẩu đã lưu:", f_normal, (16, keys_y), (300, 22));
     let keys = mk_list(
-        (14, keys_y + 26),
-        ((client_w - 28) as u32, (client_h - (keys_y + 26) - 34) as u32),
+        (16, keys_y + 26),
+        ((client_w - 32) as u32, (client_h - (keys_y + 26) - 34) as u32),
         &[("Tên Wifi (SSID)", 300), ("Mật khẩu", 470)],
     );
 
     let lbl_status = add_label(
         "Đang khởi tạo...",
         f_small,
-        (14, client_h - 28),
-        ((client_w - 28) as u32, 22),
+        (16, client_h - 28),
+        ((client_w - 32) as u32, 22),
     );
 
     let mut notice = Default::default();

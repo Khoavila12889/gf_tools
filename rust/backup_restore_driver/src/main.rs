@@ -673,18 +673,9 @@ fn pick_folder() -> Option<PathBuf> {
 }
 
 fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
-    let mut f_title = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(21).weight(700).build(&mut f_title).expect("font");
-    let mut f_normal = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).build(&mut f_normal).expect("font");
-    let mut f_small = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(14).build(&mut f_small).expect("font");
-    let mut f_button = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).weight(700).build(&mut f_button).expect("font");
-    let f_title = Box::leak(Box::new(f_title));
-    let f_normal = Box::leak(Box::new(f_normal));
-    let f_small = Box::leak(Box::new(f_small));
-    let f_button = Box::leak(Box::new(f_button));
+    let f_normal = qsu_common::ui::font_normal();
+    let f_small = qsu_common::ui::font_small();
+    let f_button = qsu_common::ui::font_button();
 
     let mut window = Default::default();
     nwg::Window::builder()
@@ -694,6 +685,7 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::MINIMIZE_BOX)
         .build(&mut window)
         .expect("window");
+    qsu_common::ui::set_window_icon(&window);
 
     let (client_w, client_h) = {
         let mut rc: RECT = unsafe { std::mem::zeroed() };
@@ -709,11 +701,7 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         lbl
     };
 
-    let _t = add_label("Backup / Restore Driver", f_title, (16, 8), (400, 30));
-    let _s = add_label(
-        "Sao lưu và khôi phục driver thiết bị bằng WMI + pnputil",
-        f_normal, (16, 40), (600, 22),
-    );
+    let (_t, _s) = qsu_common::ui::add_header(&window, "Backup / Restore Driver", "Sao lưu và khôi phục driver thiết bị bằng WMI + pnputil");
 
     // Hàng lọc nhóm thiết bị
     let filter_y = HEADER_H + 10;
@@ -809,11 +797,12 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
 
     // Hàng nút thao tác
     let btn_y = folder_y + 40;
-    let btn_backup = mk_btn("Backup", f_button, (140, btn_y), (130, 34));
-    let btn_restore = mk_btn("Restore", f_button, (280, btn_y), (130, 34));
-    let btn_html = mk_btn("Xuất HTML", f_normal, (420, btn_y), (110, 34));
-    let btn_all = mk_btn("Chọn tất cả", f_normal, (540, btn_y), (110, 34));
-    let btn_none = mk_btn("Bỏ chọn", f_normal, (660, btn_y), (90, 34));
+    let btn_backup = mk_btn("Backup", f_button, (140, btn_y), (130, 32));
+    qsu_common::ui::make_primary(&btn_backup);
+    let btn_restore = mk_btn("Restore", f_button, (280, btn_y), (130, 32));
+    let btn_html = mk_btn("Xuất HTML", f_normal, (420, btn_y), (110, 32));
+    let btn_all = mk_btn("Chọn tất cả", f_normal, (540, btn_y), (110, 32));
+    let btn_none = mk_btn("Bỏ chọn", f_normal, (660, btn_y), (90, 32));
 
     let lbl_status = add_label(
         "Đang khởi tạo...",

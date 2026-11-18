@@ -1498,25 +1498,12 @@ fn exclusion_reason(m: &Model, v: &VolumeInfo) -> Option<String> {
 }
 
 fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
-    // --- Fonts (rò có chủ đích như các module khác: sống cùng tiến trình) ---
-    let mut f_title = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(21).weight(700).build(&mut f_title).expect("font");
-    let mut f_section = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(17).weight(700).build(&mut f_section).expect("font");
-    let mut f_normal = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).build(&mut f_normal).expect("font");
-    let mut f_small = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(14).build(&mut f_small).expect("font");
-    let mut f_button = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).weight(700).build(&mut f_button).expect("font");
-    let mut f_mono = Default::default();
-    nwg::Font::builder().family("Consolas").size(14).build(&mut f_mono).expect("font");
-    let f_title = Box::leak(Box::new(f_title));
-    let f_section = Box::leak(Box::new(f_section));
-    let f_normal = Box::leak(Box::new(f_normal));
-    let f_small = Box::leak(Box::new(f_small));
-    let f_button = Box::leak(Box::new(f_button));
-    let f_mono = Box::leak(Box::new(f_mono));
+    // --- Fonts chuẩn dùng chung (qsu_common::ui) ---
+    let f_section = qsu_common::ui::font_section();
+    let f_normal = qsu_common::ui::font_normal();
+    let f_small = qsu_common::ui::font_small();
+    let f_button = qsu_common::ui::font_button();
+    let f_mono = qsu_common::ui::font_mono();
 
     let mut window = Default::default();
     nwg::Window::builder()
@@ -1526,6 +1513,7 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::MINIMIZE_BOX)
         .build(&mut window)
         .expect("window");
+    qsu_common::ui::set_window_icon(&window);
     let (client_w, client_h) = {
         let mut rc: RECT = unsafe { std::mem::zeroed() };
         unsafe { GetClientRect(window.handle.hwnd().unwrap(), &mut rc) };
@@ -1562,13 +1550,12 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
     }
 
     // --- Header ---
-    let _t1 = add_label!("Cài Đặt Win = WinPE", f_title, (16, 6), (640, 30));
     let subtitle = if in_winpe {
         "Trình cài Windows tương tác trong WinPE: chọn nguồn, chọn phân vùng đích, cài ngay tại máy"
     } else {
         "Module này chỉ cài đặt khi chạy trong WinPE — ở Windows thường, dùng mục Chuẩn bị bên dưới"
     };
-    let _t2 = add_label!(subtitle, f_small, (16, 36), (1000, 20));
+    let (_t1, _t2) = qsu_common::ui::add_header(&window, "Cài Đặt Win = WinPE", subtitle);
     let uefi = sys::firmware_is_uefi();
     let mode_text = if in_winpe {
         format!(
@@ -1578,7 +1565,7 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
     } else {
         "Môi trường: Windows thường — chế độ CHUẨN BỊ".to_string()
     };
-    let _mode = add_label!(&mode_text, f_normal, (16, 58), (1000, 22));
+    let _mode = add_label!(&mode_text, f_normal, (16, 64), (1000, 22));
 
     // ================= Cụm CÀI ĐẶT (WinPE) =================
     let lbl_s1 = add_label!("1 — NGUỒN CÀI ĐẶT", f_section, (16, 90), (460, 24));
@@ -1702,6 +1689,7 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
     bar.set_pos(0);
     let lbl_progress = add_label!("", f_small, (688, 774), (320, 22));
     let btn_start = add_button!("BẮT ĐẦU CÀI ĐẶT", (688, 798), (320, 44));
+    qsu_common::ui::make_primary(&btn_start);
     let btn_reboot = add_button!("Khởi động lại", (688, 850), (156, 38));
     let btn_close = add_button!("Đóng", (852, 850), (156, 38));
 
@@ -1756,6 +1744,7 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::MINIMIZE_BOX)
         .build(&mut win_browser)
         .expect("browser window");
+    qsu_common::ui::set_window_icon(&win_browser);
     let mut lbl_btitle = Default::default();
     nwg::Label::builder()
         .text("Chọn file nguồn cài đặt (.iso / .wim / .esd / .swm)")

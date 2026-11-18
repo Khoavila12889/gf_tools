@@ -579,21 +579,10 @@ fn rebuild_list(app: &Rc<App>) {
 }
 
 fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
-    let mut f_title = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(21).weight(700).build(&mut f_title).expect("font");
-    let mut f_normal = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).build(&mut f_normal).expect("font");
-    let mut f_small = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(14).build(&mut f_small).expect("font");
-    let mut f_button = Default::default();
-    nwg::Font::builder().family("Segoe UI").size(15).weight(700).build(&mut f_button).expect("font");
-    let mut f_mono = Default::default();
-    nwg::Font::builder().family("Consolas").size(14).build(&mut f_mono).expect("font");
-    let f_title = Box::leak(Box::new(f_title));
-    let f_normal = Box::leak(Box::new(f_normal));
-    let f_small = Box::leak(Box::new(f_small));
-    let f_button = Box::leak(Box::new(f_button));
-    let f_mono = Box::leak(Box::new(f_mono));
+    let f_normal = qsu_common::ui::font_normal();
+    let f_small = qsu_common::ui::font_small();
+    let f_button = qsu_common::ui::font_button();
+    let f_mono = qsu_common::ui::font_mono();
 
     let mut window = Default::default();
     nwg::Window::builder()
@@ -603,6 +592,7 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::MINIMIZE_BOX)
         .build(&mut window)
         .expect("window");
+    qsu_common::ui::set_window_icon(&window);
 
     let (client_w, client_h) = {
         let mut rc: RECT = unsafe { std::mem::zeroed() };
@@ -618,11 +608,7 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
         lbl
     };
 
-    let _t = add_label("Tuỳ Chỉnh Windows", f_title, (16, 8), (400, 30));
-    let _s = add_label(
-        "Catalogue tinh chỉnh theo chuẩn Sophia Script — mọi tinh chỉnh đều hoàn tác được về mặc định Windows",
-        f_normal, (16, 40), (860, 22),
-    );
+    let (_t, _s) = qsu_common::ui::add_header(&window, "Tuỳ Chỉnh Windows", "Catalogue tinh chỉnh theo chuẩn Sophia Script — mọi tinh chỉnh đều hoàn tác được về mặc định Windows");
 
     // --- Cột trái: nhóm ---
     let _lc = add_label("Nhóm:", f_normal, (14, HEADER_H + 10), (200, 22));
@@ -703,14 +689,15 @@ fn build_ui(exe_dir: PathBuf) -> (nwg::Window, Rc<App>) {
 
     // --- Hàng nút thao tác ---
     let btn_y = desc_y + 54;
-    let btn_apply_one = mk_btn("Áp dụng mục chọn", (list_x, btn_y), (150, 34));
-    let btn_undo_one = mk_btn("Hoàn tác mục chọn", (list_x + 158, btn_y), (150, 34));
-    let btn_apply_checked = mk_btn("Áp dụng mục đã tick", (list_x + 316, btn_y), (168, 34));
-    let btn_undo_checked = mk_btn("Hoàn tác mục đã tick", (list_x + 492, btn_y), (168, 34));
-    let btn_remove_appx = mk_btn("Gỡ các gói đã tick", (list_x, btn_y), (200, 34));
+    let btn_apply_one = mk_btn("Áp dụng mục chọn", (list_x, btn_y), (150, 32));
+    let btn_undo_one = mk_btn("Hoàn tác mục chọn", (list_x + 158, btn_y), (150, 32));
+    let btn_apply_checked = mk_btn("Áp dụng mục đã tick", (list_x + 316, btn_y), (168, 32));
+    qsu_common::ui::make_primary(&btn_apply_checked);
+    let btn_undo_checked = mk_btn("Hoàn tác mục đã tick", (list_x + 492, btn_y), (168, 32));
+    let btn_remove_appx = mk_btn("Gỡ các gói đã tick", (list_x, btn_y), (200, 32));
     btn_remove_appx.set_visible(false);
-    let btn_check_all = mk_btn("Tick tất cả", (client_w - 196, btn_y), (86, 34));
-    let btn_uncheck_all = mk_btn("Bỏ tick", (client_w - 102, btn_y), (86, 34));
+    let btn_check_all = mk_btn("Tick tất cả", (client_w - 196, btn_y), (86, 32));
+    let btn_uncheck_all = mk_btn("Bỏ tick", (client_w - 102, btn_y), (86, 32));
 
     // --- Nhật ký ---
     let log_y = btn_y + 46;
