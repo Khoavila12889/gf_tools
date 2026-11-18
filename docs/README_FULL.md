@@ -889,12 +889,26 @@ Ba đường lấy ISO:
    (khi so khớp tiền tố băm, code so theo ký tự `chars().take(16)`
    chứ không cắt byte — sửa từ phát hiện T1).
 
-Gắn ISO: `mount_iso()` chạy PowerShell `Mount-DiskImage` rồi lấy ký
-tự ổ từ `Get-Volume` — ký tự ổ được lấy là **ký tự chữ cái đầu tiên**
-trong output (hành vi này là phát hiện mở D4: đúng với output thông
-thường nhưng là suy đoán theo kinh nghiệm (heuristic); khi output
-bất thường thì fail-safe theo hướng không gắn được chứ không gắn
-nhầm nội dung).
+Gắn ISO (từ v0.7.17 — BA LỚP): `mount_iso()` thử lần lượt
+(1) dùng lại mount có sẵn: sổ đăng ký mount trong tiến trình còn
+giữ ký tự của chính ISO đó, hoặc `Get-DiskImage` báo Attached ở
+tầng hệ thống thì lấy ký tự qua `Get-Volume`; (2) PowerShell
+`Mount-DiskImage` với `$ErrorActionPreference = 'Stop'` — mọi
+lệnh trong đường này thu cả stdout lẫn stderr và lỗi thất bại
+được gộp thành mã thoát + nguyên văn lỗi của cmdlet (các bản
+trước chỉ dựa vào lệnh này và khi nó nuốt lỗi, hộp thoại hiện
+"(output: )" rỗng — thực địa trên máy Windows lite); (3) dự
+phòng VirtDisk API gốc: `OpenVirtualDisk` (storage-type ISO) +
+`AttachVirtualDisk` đọc-chỉ-đọc gọi thẳng từ Rust (FFI khai báo
+tay, winapi 0.3 không có module virtdisk), ký tự ổ dò bằng hiệu
+tập volume `GetLogicalDrives` trước/sau attach (ký tự DRIVE_CDROM
+mới, ưu tiên ký tự có `sources\install.*`, thăm dò ~10 giây).
+Ký tự lấy từ output `Get-Volume` vẫn là **ký tự chữ cái đầu
+tiên** (heuristic cũ — phát hiện mở D4). `dismount_iso()` gỡ
+đối xứng theo cơ chế đã mount ghi trong sổ đăng ký:
+Dismount-DiskImage cho mount PowerShell, DetachVirtualDisk +
+đóng handle cho mount VirtDisk. Cả ba lớp cùng hỏng thì hộp
+thoại liệt kê lỗi của từng cơ chế.
 
 Đọc edition: `load_editions()` chạy DISM `/English /Get-WimInfo`
 lên `install.wim/.esd` trong ISO, phân tích bằng `parse_kv()`;
@@ -1546,6 +1560,7 @@ Mỗi phiên bản một dòng, theo `BUILD_NOTES.md` và các gói phát hành
 | v0.7.14 | 2026-11-17 | Sửa hai lỗi trên: hằng số checkbox `0x400` → `0x4` ở 4 module (Tuỳ Chỉnh Windows, Dọn Rác, Backup/Restore Driver, Sao Lưu Wifi); engine inject thêm driver đã sao lưu từ `QSU-DriverBackup` trên ổ Data (đọc `driverBackupRel`, kiểm tra tên tương đối an toàn). |
 | v0.7.15 | 2026-11-18 | **Đóng gói lại WinPE thành WIM một ảnh bootable** trong wizard (`repack_winpe_single_image()`, mốc 69%): sau khi inject, xuất riêng index đã inject bằng `/Export-Image /Bootable /Compress:Max` rồi thay `winpe.wim` — sửa ca thực địa 2026-11-17 winload nạp nhầm ảnh Windows Setup vì WIM hai-ảnh không có Boot Index chỉ định ảnh PE. Không khôi phục cổng kiểm chứng DISM-text đã gỡ ở v0.7.11. |
 | v0.7.16 | 2026-11-18 | **Engine tự gán ký tự ổ cho phân vùng boot sau khi chia** (`disk::ensure_boot_letter()` trong `qsu_common`, dùng chung cho `execute_wipe()` và `execute_rebuild()`): sửa ca thực địa `winpe-20261117-1811.log` — bản repack v0.7.15 đã đưa được engine lên, diskpart wipe báo thành công mọi bước kể cả `assign letter=S`, nhưng liệt kê sau wipe thấy phân vùng EFI không có ký tự ổ và bước xác minh cũ huỷ toàn bộ ca cài ngay sau bước phá huỷ. Nay phân vùng boot thiếu ký tự thì engine tự gán (ưu tiên `S:`, diskpart phụ / `SetVolumeMountPointW`, thử lại 1 lần) và chốt bằng probe truy cập thật đường dẫn gốc; chỉ dừng khi phân vùng vắng mặt hẳn hoặc gán + probe đều thất bại. |
+| v0.7.17 | 2026-11-18 | **Mount ISO ba lớp trong wizard** + **UX xác nhận serial**: sửa ca thực địa trên máy Windows lite — "Đọc ISO" với ISO gốc báo "Mount-DiskImage không trả ký tự ổ đĩa (output: )" rỗng vì đường mount cũ chỉ dựa vào một lệnh PowerShell và lỗi cmdlet bị nuốt. Nay `mount_iso()` dùng lại mount có sẵn → PowerShell với lỗi ép terminating và hiện nguyên văn → dự phòng VirtDisk API gốc (ký tự ổ dò bằng hiệu tập volume); `dismount_iso()` gỡ đối xứng theo sổ đăng ký mount. Vùng xác nhận serial (cả wipeDisk/rebuild): thêm dòng định danh đĩa đích đầy đủ ngay trên ô nhập + nhãn phản hồi khớp/chưa khớp trực tiếp theo từng ký tự (cùng `normalize_disk_serial` như chốt chặn lúc bấm TIẾN HÀNH) + danh sách đĩa xổ xuống rộng 780px để không cắt serial. Chỉ wizard thay đổi; engine giữ nguyên. |
 
 ---
 

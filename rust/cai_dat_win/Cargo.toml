@@ -11,4 +11,4 @@ path = "src/main.rs"
 [dependencies]
 qsu_common = { path = "../qsu_common" }
 native-windows-gui = "1.0"
-winapi = { version = "0.3", features = ["shellapi", "winuser", "winreg", "winerror", "wingdi", "winnt", "commctrl"] }
+winapi = { version = "0.3", features = ["shellapi", "winuser", "winreg", "winerror", "wingdi", "winnt", "commctrl", "fileapi", "handleapi"] }

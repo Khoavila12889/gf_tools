@@ -1382,6 +1382,112 @@ reboot vào WinPE để engine cài thật.
   sạch (0 lỗi, 0 cảnh báo). **Chưa test trên máy thật** —
   ca test quyết định là ca ưu tiên trong HUONG-DAN.
 
+## v0.7.17 — Mount ISO ba lớp + UX xác nhận serial (2026-11-18)
+
+- **Triệu chứng thực địa 1 (mount ISO):** trên DESKTOP-704R89L
+  đang chạy Windows lite, chọn ISO gốc
+  `E:\ISO\Win11_25H2_English_x64_v2.iso` rồi bấm "Đọc ISO" →
+  hộp thoại "Mount-DiskImage không trả ký tự ổ đĩa (output: )"
+  — output rỗng cả stdout lẫn stderr, đọc ISO bị huỷ. Đường
+  mount cũ chỉ dựa vào MỘT lệnh PowerShell
+  `Mount-DiskImage ... | Get-Volume` và chỉ nhìn stdout: lỗi
+  của cmdlet (không thành terminating) bị nuốt — mã thoát vẫn
+  0, không chữ nào lọt ra, người dùng không có cách biết lý do.
+- **Bản sửa 1 (crate cai_dat_win — đường mount ISO viết lại
+  thành BA LỚP, `mount_iso()`/`dismount_iso()`):**
+  1. **Dùng lại mount có sẵn:** `Get-DiskImage` báo Attached
+     thì lấy ký tự qua `Get-Volume` và dùng luôn (ISO mount
+     bởi lần đọc trước / Explorer / tool khác khỏi mount lại).
+     Sổ đăng ký mount trong tiến trình (OnceLock<Mutex<...>>)
+     cũng giữ mount của chính wizard: đọc lại cùng ISO thì
+     trả ngay ký tự đã ghi (kèm kiểm tra gốc ổ còn sống).
+  2. **PowerShell với lỗi đầy đủ:** script đặt
+     `$ErrorActionPreference = 'Stop'` và `throw` tường minh
+     khi không có ký tự — lỗi cmdlet thành terminating, mã
+     thoát ≠ 0, stderr mang nguyên văn lỗi. Mọi lệnh PowerShell
+     trong đường này chạy qua `run_powershell()` thu cả hai
+     luồng; thất bại được gộp bằng `ps_failure_text()` (mã
+     thoát thập phân + hex + stderr/stdout, cắt theo biên ký
+     tự) — KHÔNG còn "(output: )" rỗng. Lệnh mount thành công
+     vẫn trích ký tự theo heuristic cũ (ký tự chữ cái đầu tiên).
+  3. **VirtDisk API gốc (dự phòng cuối):** module FFI khai báo
+     tay trong `main.rs` (winapi 0.3 không có virtdisk;
+     `#[link(name = "virtdisk")]`, đã kiểm tra import table
+     của exe có OpenVirtualDisk/AttachVirtualDisk từ
+     VirtDisk.dll): `OpenVirtualDisk` với VIRTUAL_STORAGE_TYPE
+     device ISO + vendor GUID Microsoft, access
+     ATTACH_RO|DETACH; `AttachVirtualDisk` cờ READ_ONLY |
+     PERMANENT_LIFETIME. Ký tự ổ dò bằng HIỆU TẬP VOLUME: chụp
+     `GetLogicalDrives` trước attach, thăm dò tối đa ~10 giây
+     tìm ký tự MỚI thuộc loại DRIVE_CDROM — ưu tiên ký tự có
+     `sources\install.*`. Lỗi Open/Attach trả mã lỗi Windows
+     (thập phân + hex) trong thông báo.
+  - **Gỡ mount đối xứng:** sổ đăng ký ghi cơ chế + ký tự +
+    HANDLE (dạng usize) theo từng ISO. `dismount_iso()` tra
+    sổ: VirtDisk → `DetachVirtualDisk` + `CloseHandle` (kèm
+    `Dismount-DiskImage` dọn dẹp vô hại); PowerShell/không có
+    trong sổ → `Dismount-DiskImage` như cũ. Mọi điểm gọi
+    dismount giữ nguyên vị trí (đổi ISO, đọc lỗi, cuối ca cài).
+  - Nếu cả ba lớp đều hỏng, hộp thoại liệt kê lỗi của TỪNG cơ
+    chế (PowerShell: ... / VirtDisk: ...) — ISO hỏng/không đọc
+    được từ nay luôn kết thúc bằng lỗi thật của hệ điều hành.
+  - Phần sau mount giữ nguyên byte-for-byte về hành vi: liệt
+    kê edition từ ký tự ổ, chép sources, dò WIM, inject,
+    repack một ảnh (v0.7.15), BCD.
+- **Triệu chứng thực địa 2 (xác nhận serial — yêu cầu bổ sung
+  của người dùng khi test rebuild):** vùng xác nhận serial
+  "không dùng được": dòng định danh đĩa trong ô chọn bị cắt
+  mất phần serial (ô chọn rộng 366px trong khi `summary()` gồm
+  số đĩa — model — dung lượng — serial — kiểu đĩa — số phân
+  vùng), kỹ thuật viên không thấy serial đĩa đích để gõ, gõ
+  xong cũng không biết khớp chưa cho tới khi bấm TIẾN HÀNH.
+- **Bản sửa 2 (xác nhận serial — cả wipeDisk lẫn rebuild):**
+  1. **Dòng định danh đầy đủ** (`lbl_disk_id`, mới): ngay trên
+     ô nhập serial, rộng hết trang: "Đĩa đích: Đĩa 1 —
+     GIGABYTE GP-GSTFS31120GNTD — 60.4 GB — serial
+     SN192808960256". `update_serial_ui()` đổ lại mỗi lần đĩa
+     chọn thay đổi (gọi ở đầu `update_disk_parts()` — bao phủ
+     mọi đường đổi đĩa/quét lại/đổi chế độ).
+  2. **Phản hồi trực tiếp** (`lbl_serial_fb`, mới): nhãn ngay
+     cạnh ô nhập; sự kiện `OnTextInput` (EN_CHANGE) gọi
+     `update_serial_feedback()` theo từng ký tự: "✓ Đã khớp
+     serial đĩa đích" / "✗ Chưa khớp serial đĩa đích" (ô trống
+     thì không hiện). So khớp dùng ĐÚNG
+     `disk::normalize_disk_serial` như chốt kiểm tra lúc bấm
+     TIẾN HÀNH — phản hồi và chốt chặn không lệch nhau; chốt
+     chặn cũ (hộp thoại khi bấm nút + `update_start_enabled`)
+     giữ nguyên không đổi.
+  3. **Ô nhập hiện chữ thật:** `inp_disk_serial` vốn không hề
+     đặt ES_PASSWORD (chỉ hai ô mật khẩu có) — ghi rõ thành
+     chú thích trong code để không ai "sửa" nhầm về sau.
+  4. **Ô chọn đĩa:** nội dung dòng chọn giữ nguyên `summary()`
+     (đã có đủ số đĩa + model + dung lượng + serial); thêm
+     `CB_SETDROPPEDWIDTH = 780` để danh sách xổ xuống không
+     cắt chữ. Bố cục tab 2 dịch xuống 26px từ dòng định danh
+     trở đi (trang còn dư chiều cao), đăng ký đủ vào bảng bố
+     cục thích ứng (lbl_disk_id: Fixed/Grow; lbl_serial_fb:
+     ShiftRight/Fixed) và vào `update_part_ui` (ẩn/hiện cùng
+     khối đĩa).
+- **Tài liệu:** tab "Tài liệu" mục 1 thêm gạch đầu dòng mô
+  tả mount ISO ba lớp; `docs/co_che_v0.7.17.md` = bản sao của
+  co_che_v0.7.16.md + thay đổi trên (đã đối chiếu thân tài
+  liệu khớp từng chữ với TAI_LIEU_TEXT bằng script);
+  README_FULL §"Gắn ISO" viết lại theo cơ chế ba lớp + dòng
+  lịch sử v0.7.17; HUONG-DAN.txt có mục v0.7.17 + ca test ưu
+  tiên (đọc lại đúng ISO `Win11_25H2_English_x64_v2.iso` trên
+  DESKTOP-704R89L → phải liệt kê được edition; hồi quy: ISO
+  mod đọc vẫn tốt; kiểm tra vùng xác nhận serial ở cả hai
+  chế độ wipe/rebuild).
+- Gói: `~/workspace/UtilityRebuild-v0.7.17.zip` (10.045.568
+  byte, 16 file, testzip sạch; drop_v0.7.17 = drop_v0.7.16 + wizard
+  `CaiDatWinTuDong.exe` build lại 3.065.406 byte, md5
+  `868d5d04…` + HUONG-DAN.txt cập nhật — 12 file còn lại,
+  gồm engine WinPEInstall.exe, byte-identical với v0.7.16,
+  đã đối chứng md5 từng file trong zip khớp bản trong drop).
+  Build release sạch (0 lỗi, 0 cảnh báo). **Chưa test trên
+  máy thật** — ca test quyết định là ca ưu tiên trong
+  HUONG-DAN.
+
 ## Khác biệt có chủ đích so với bản gốc
 
 - Không cổng key bản quyền, không biến môi trường "token" khóa module.

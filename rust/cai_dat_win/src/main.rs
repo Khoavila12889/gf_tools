@@ -9,11 +9,19 @@
 //!
 //! Quyết định triển khai đáng chú ý (xem "Implementation notes v1.1"
 //! trong đặc tả):
-//! - Mount ISO bằng PowerShell `Mount-DiskImage`/`Dismount-DiskImage`
-//!   (đúng cơ chế đặc tả §3 đã chọn; API VirtDisk thô phải tự dò ký tự
-//!   ổ đĩa và xử lý storage-type ISO, đổi lại không thêm được gì cho
-//!   người dùng). Wizard chỉ chạy trên Windows đầy đủ nên PowerShell
-//!   luôn có mặt; engine WinPE không phụ thuộc PowerShell.
+//! - Mount ISO BA LỚP (v0.7.17): (1) dùng lại mount có sẵn nếu ISO
+//!   đã gắn (Get-DiskImage Attached); (2) PowerShell `Mount-DiskImage`
+//!   với lỗi ép thành terminating để hộp thoại luôn thấy lỗi thật —
+//!   các bản trước chỉ trông vào một lệnh này và khi nó nuốt lỗi,
+//!   hộp thoại hiện "(output: )" rỗng (thực địa trên máy chạy
+//!   Windows lite: cmdlet Storage không mount được mà không để lại
+//!   chữ nào); (3) dự phòng bằng VirtDisk API gốc (OpenVirtualDisk
+//!   storage-type ISO + AttachVirtualDisk đọc-chỉ-đọc, ký tự ổ dò
+//!   bằng hiệu tập volume trước/sau attach) — không phụ thuộc
+//!   PowerShell/cmdlet nào. Gỡ mount đối xứng theo cơ chế đã mount
+//!   (sổ đăng ký mount trong tiến trình): Dismount-DiskImage cho
+//!   mount PowerShell, DetachVirtualDisk + đóng handle cho VirtDisk.
+//!   Engine WinPE không phụ thuộc cơ chế này.
 //! - Trạng thái BitLocker đọc qua `Get-BitLockerVolume` (tên enum
 //!   không phụ thuộc ngôn ngữ hiển thị), tránh phân tích output đã
 //!   bản địa hoá của manage-bde.
@@ -37,7 +45,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use native_windows_gui as nwg;
@@ -781,41 +789,419 @@ fn spawn_download(
 // ---------------------------------------------------------------------------
 // Giai đoạn 2 — mount ISO + đọc phiên bản (đặc tả §4)
 // ---------------------------------------------------------------------------
-fn mount_iso(iso: &Path) -> Result<char, String> {
-    let path_s = iso.to_string_lossy().replace('\'', "''");
-    let script = format!(
-        "$v = Mount-DiskImage -ImagePath '{}' -PassThru | Get-Volume; if ($v) {{ $v.DriveLetter }}",
-        path_s
-    );
-    let out = cmd::run_capture(
+// Mount ISO BA LỚP (v0.7.17). Bối cảnh thực địa: trên máy test chạy
+// Windows lite, bấm "Đọc ISO" với ISO gốc của Microsoft thì hộp
+// thoại báo "Mount-DiskImage không trả ký tự ổ đĩa (output: )" —
+// output RỖNG cả hai luồng, đọc ISO bị huỷ mà không ai biết lý do:
+// lệnh PowerShell duy nhất của các bản trước nuốt mất lỗi thật
+// (cmdlet Storage trên bản lite không mount được nhưng lỗi không
+// thành terminating nên mã thoát vẫn 0 và không chữ nào lọt ra).
+// Từ v0.7.17 đường mount có ba lớp, lớp sau cứu lớp trước:
+//   1. DÙNG LẠI: ISO đã gắn sẵn (lần đọc trước, Explorer mount,
+//      tool khác...) → lấy ký tự qua Get-DiskImage Attached.
+//   2. POWERSHELL: Mount-DiskImage với $ErrorActionPreference =
+//      'Stop' — lỗi cmdlet thành terminating, mã thoát khác 0 và
+//      stderr mang NGUYÊN VĂN lỗi; hộp thoại hiện đúng lỗi đó.
+//   3. VIRT DISK API: OpenVirtualDisk (storage-type ISO) +
+//      AttachVirtualDisk đọc-chỉ-đọc gọi thẳng từ Rust, không qua
+//      PowerShell — cứu các máy mà tầng cmdlet Storage hỏng/thiếu.
+// Ký tự ổ của lớp 3 dò bằng HIỆU TẬP VOLUME: chụp mặt nạ ký tự ổ
+// trước attach, ký tự DVD MỚI xuất hiện sau attach là ISO.
+// Gỡ mount ĐỐI XỨNG theo cơ chế đã mount, nhờ SỔ ĐĂNG KÝ mount
+// của tiến trình: mount PowerShell → Dismount-DiskImage; mount
+// VirtDisk → DetachVirtualDisk bằng chính handle đã mở + đóng
+// handle (kèm Dismount-DiskImage dọn dẹp vô hại). Mọi điểm trước
+// đây gọi dismount_iso giữ nguyên vị trí.
+
+/// Cơ chế đã mount một ISO — quyết định cách gỡ mount đối xứng.
+#[derive(Clone, Copy, PartialEq)]
+enum IsoMountKind {
+    PowerShell,
+    VirtDisk,
+}
+
+struct IsoMountRec {
+    kind: IsoMountKind,
+    letter: char,
+    /// HANDLE VirtDisk lưu dạng usize (HANDLE thô không Send —
+    /// sổ chỉ được chạm qua Mutex nên an toàn); 0 nếu mount bằng
+    /// PowerShell.
+    vdisk_handle: usize,
+}
+
+/// Sổ đăng ký các ISO đang mount bởi tiến trình wizard: khoá là
+/// đường dẫn viết thường (Windows không phân biệt hoa thường).
+fn iso_mounts() -> &'static Mutex<Vec<(String, IsoMountRec)>> {
+    static MOUNTS: OnceLock<Mutex<Vec<(String, IsoMountRec)>>> = OnceLock::new();
+    MOUNTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn iso_mount_key(iso: &Path) -> String {
+    iso.to_string_lossy().to_lowercase()
+}
+
+fn register_iso_mount(iso: &Path, rec: IsoMountRec) {
+    let key = iso_mount_key(iso);
+    let mut mounts = iso_mounts().lock().unwrap();
+    mounts.retain(|(k, _)| *k != key);
+    mounts.push((key, rec));
+}
+
+fn take_iso_mount(iso: &Path) -> Option<IsoMountRec> {
+    let key = iso_mount_key(iso);
+    let mut mounts = iso_mounts().lock().unwrap();
+    let pos = mounts.iter().position(|(k, _)| *k == key)?;
+    Some(mounts.remove(pos).1)
+}
+
+/// Chạy một script PowerShell thu CẢ stdout lẫn stderr (mọi lệnh
+/// trong đường mount ISO đi qua đây — lỗi thật không bị nuốt).
+fn run_powershell(script: &str) -> Result<cmd::CmdOut, String> {
+    cmd::run_capture(
         "powershell",
-        &["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script],
+        &["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
     )
-    .map_err(|e| format!("không chạy được PowerShell: {}", e))?;
-    out.stdout
-        .trim()
+    .map_err(|e| format!("không chạy được PowerShell: {}", e))
+}
+
+/// Trích ký tự ổ đĩa từ output Get-Volume: ký tự chữ cái đầu tiên
+/// (heuristic cũ đã chứng minh đúng ở thực địa — giữ nguyên).
+fn letter_from_output(s: &str) -> Option<char> {
+    s.trim()
         .chars()
         .find(|c| c.is_ascii_alphabetic())
         .map(|c| c.to_ascii_uppercase())
-        .ok_or_else(|| {
-            format!(
-                "Mount-DiskImage không trả ký tự ổ đĩa (output: {} {})",
-                out.stdout.trim(),
-                out.stderr.trim()
-            )
-        })
 }
 
+/// Gộp một lần chạy PowerShell thất bại thành đoạn lỗi ĐỌC ĐƯỢC:
+/// mã thoát (thập phân + hex) + stderr nguyên văn (nơi PowerShell
+/// ghi lỗi cmdlet); stderr rỗng thì dùng stdout; cả hai rỗng thì
+/// nói rõ là không có thêm chi tiết — KHÔNG bao giờ còn "(output: )"
+/// trống trơn như bản cũ. Chi tiết dài thì giữ phần CUỐI (lỗi nằm
+/// ở cuối), cắt theo biên ký tự.
+fn ps_failure_text(what: &str, out: &cmd::CmdOut) -> String {
+    let mut detail = out.stderr.trim().to_string();
+    if detail.is_empty() {
+        detail = out.stdout.trim().to_string();
+    }
+    let chars: Vec<char> = detail.chars().collect();
+    if chars.len() > 700 {
+        detail = chars[chars.len() - 700..].iter().collect();
+    }
+    if detail.is_empty() {
+        format!(
+            "{} thất bại ({}) — PowerShell không in thêm chi tiết nào.",
+            what,
+            fmt_exit_code(out.code)
+        )
+    } else {
+        format!("{} thất bại ({}): {}", what, fmt_exit_code(out.code), detail)
+    }
+}
+
+/// Lớp 1 — ISO đã gắn sẵn thì dùng lại ký tự ổ, khỏi mount lại.
+fn iso_mounted_letter(iso: &Path) -> Option<char> {
+    let path_s = iso.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "$img = Get-DiskImage -ImagePath '{}' -ErrorAction SilentlyContinue; if ($img -and $img.Attached) {{ $v = $img | Get-Volume -ErrorAction SilentlyContinue; if ($v) {{ $v.DriveLetter }} }}",
+        path_s
+    );
+    let out = run_powershell(&script).ok()?;
+    if out.code != Some(0) {
+        return None;
+    }
+    letter_from_output(&out.stdout)
+}
+
+/// Lớp 2 — mount bằng PowerShell Mount-DiskImage, lỗi ép thành
+/// terminating để mã thoát + stderr luôn mang lỗi thật.
+fn mount_iso_powershell(iso: &Path) -> Result<char, String> {
+    let path_s = iso.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'; $v = Mount-DiskImage -ImagePath '{}' -PassThru | Get-Volume; if ($v -and $v.DriveLetter) {{ [string]$v.DriveLetter }} else {{ throw 'Mount-DiskImage không gán được ký tự ổ đĩa cho ISO.' }}",
+        path_s
+    );
+    let out = run_powershell(&script)?;
+    if out.code == Some(0) {
+        if let Some(l) = letter_from_output(&out.stdout) {
+            return Ok(l);
+        }
+    }
+    Err(ps_failure_text("Mount-DiskImage", &out))
+}
+
+/// FFI tối thiểu tới VirtDisk API (virtdisk.dll) — winapi 0.3
+/// không có module virtdisk nên khai báo tay đúng nguyên mẫu của
+/// Windows SDK. Chỉ phục vụ lớp mount dự phòng (lớp 3).
+mod virtdisk {
+    #![allow(dead_code)]
+    use std::ffi::c_void;
+    use winapi::shared::guiddef::GUID;
+    use winapi::shared::minwindef::{DWORD, ULONG};
+    use winapi::um::winnt::{HANDLE, PCWSTR};
+
+    /// VIRTUAL_STORAGE_TYPE_DEVICE_ISO.
+    pub const STORAGE_DEVICE_ISO: ULONG = 1;
+    /// GUID nhà cung cấp Microsoft của VIRTUAL_STORAGE_TYPE
+    /// ({EC984AEC-A0F9-47E9-901F-71415A66345B}).
+    pub const VENDOR_MICROSOFT: GUID = GUID {
+        Data1: 0xEC98_4AEC,
+        Data2: 0xA0F9,
+        Data3: 0x47E9,
+        Data4: [0x90, 0x1F, 0x71, 0x41, 0x5A, 0x66, 0x34, 0x5B],
+    };
+    pub const OPEN_VERSION_1: DWORD = 1;
+    pub const OPEN_RW_DEPTH_DEFAULT: ULONG = 1;
+    pub const ATTACH_VERSION_1: DWORD = 1;
+    /// VIRTUAL_DISK_ACCESS_ATTACH_RO (0x00010000) |
+    /// VIRTUAL_DISK_ACCESS_DETACH (0x00040000): handle đủ quyền
+    /// gắn đọc-chỉ-đọc bây giờ và tháo bằng chính nó về sau.
+    pub const ACCESS_ATTACH_RO_DETACH: DWORD = 0x0005_0000;
+    /// ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY (0x1) |
+    /// ATTACH_VIRTUAL_DISK_FLAG_PERMANENT_LIFETIME (0x4): ảnh gắn
+    /// sống tới khi DetachVirtualDisk tường minh — không tự tháo
+    /// nếu handle bị đóng sớm; wizard giữ handle trong sổ đăng ký
+    /// và tháo đúng ở các điểm gỡ mount như trước.
+    pub const ATTACH_FLAGS_ISO: DWORD = 0x0000_0005;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct VirtualStorageType {
+        pub device_id: ULONG,
+        pub vendor_id: GUID,
+    }
+    /// OPEN_VIRTUAL_DISK_PARAMETERS bản Version 1 (Version +
+    /// Version1.RWDepth).
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct OpenParameters {
+        pub version: DWORD,
+        pub rw_depth: ULONG,
+    }
+    /// ATTACH_VIRTUAL_DISK_PARAMETERS bản Version 1 (Version +
+    /// Version1.Reserved).
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct AttachParameters {
+        pub version: DWORD,
+        pub reserved: ULONG,
+    }
+
+    #[link(name = "virtdisk")]
+    extern "system" {
+        pub fn OpenVirtualDisk(
+            storage_type: *const VirtualStorageType,
+            path: PCWSTR,
+            access_mask: DWORD,
+            flags: DWORD,
+            parameters: *const OpenParameters,
+            handle: *mut HANDLE,
+        ) -> DWORD;
+        pub fn AttachVirtualDisk(
+            handle: HANDLE,
+            security_descriptor: *mut c_void,
+            flags: DWORD,
+            provider_flags: DWORD,
+            parameters: *const AttachParameters,
+            overlapped: *mut c_void,
+        ) -> DWORD;
+        pub fn DetachVirtualDisk(handle: HANDLE, flags: DWORD, provider_flags: DWORD) -> DWORD;
+    }
+}
+
+/// Mặt nạ ký tự ổ hiện có (bit i = ổ 'A'+i) — chụp trước/sau
+/// attach để tìm volume DVD mới của ISO.
+fn logical_drives_mask() -> u32 {
+    unsafe { winapi::um::fileapi::GetLogicalDrives() }
+}
+
+/// Ký tự ổ là ổ CD/DVD (DRIVE_CDROM = 5) và gốc ổ truy cập được.
+fn is_cdrom_letter(letter: char) -> bool {
+    let root: Vec<u16> = format!("{}:\\", letter).encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe { winapi::um::fileapi::GetDriveTypeW(root.as_ptr()) == 5 }
+}
+
+/// Lớp 3 — mount bằng VirtDisk API gốc, không qua PowerShell.
+/// Thành công trả (ký tự ổ, HANDLE dạng usize) để sổ đăng ký giữ
+/// handle cho bước gỡ mount đối xứng.
+fn mount_iso_virtdisk(iso: &Path) -> Result<(char, usize), String> {
+    use winapi::um::handleapi::CloseHandle;
+    let before = logical_drives_mask();
+    let wide: Vec<u16> = iso
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let storage = virtdisk::VirtualStorageType {
+        device_id: virtdisk::STORAGE_DEVICE_ISO,
+        vendor_id: virtdisk::VENDOR_MICROSOFT,
+    };
+    let open_params = virtdisk::OpenParameters {
+        version: virtdisk::OPEN_VERSION_1,
+        rw_depth: virtdisk::OPEN_RW_DEPTH_DEFAULT,
+    };
+    let mut handle: winapi::um::winnt::HANDLE = std::ptr::null_mut();
+    let rc = unsafe {
+        virtdisk::OpenVirtualDisk(
+            &storage,
+            wide.as_ptr(),
+            virtdisk::ACCESS_ATTACH_RO_DETACH,
+            0,
+            &open_params,
+            &mut handle,
+        )
+    };
+    if rc != 0 || handle.is_null() {
+        return Err(format!(
+            "OpenVirtualDisk thất bại (mã lỗi Windows {} — 0x{:08X}). File ISO có thể hỏng/không phải ảnh đĩa hợp lệ, hoặc máy thiếu thành phần Virtual Disk.",
+            rc, rc
+        ));
+    }
+    let attach_params = virtdisk::AttachParameters {
+        version: virtdisk::ATTACH_VERSION_1,
+        reserved: 0,
+    };
+    let rc = unsafe {
+        virtdisk::AttachVirtualDisk(
+            handle,
+            std::ptr::null_mut(),
+            virtdisk::ATTACH_FLAGS_ISO,
+            0,
+            &attach_params,
+            std::ptr::null_mut(),
+        )
+    };
+    if rc != 0 {
+        unsafe {
+            CloseHandle(handle);
+        }
+        return Err(format!(
+            "AttachVirtualDisk thất bại (mã lỗi Windows {} — 0x{:08X}).",
+            rc, rc
+        ));
+    }
+    // Dò ký tự ổ MỚI: volume DVD của ISO hiện ra sau attach ít
+    // lâu — thăm dò tối đa ~10 giây. Ưu tiên ký tự có sẵn
+    // sources\install.* (chính là ISO cài Windows); không có thì
+    // lấy ký tự DVD mới đầu tiên (bước đọc edition sẽ tự báo nếu
+    // ISO thiếu file cài đặt, như trước).
+    let mut fallback: Option<char> = None;
+    for _ in 0..40 {
+        let now = logical_drives_mask();
+        let new_bits = now & !before;
+        for i in 0..26u32 {
+            if new_bits & (1u32 << i) != 0 {
+                let letter = (b'A' + i as u8) as char;
+                if is_cdrom_letter(letter) {
+                    if find_image_file(letter).is_some() {
+                        return Ok((letter, handle as usize));
+                    }
+                    if fallback.is_none() {
+                        fallback = Some(letter);
+                    }
+                }
+            }
+        }
+        if let Some(l) = fallback {
+            // Cho thêm vài vòng thăm dò ngắn để sources kịp hiện
+            // trước khi chốt ký tự dự phòng.
+            std::thread::sleep(Duration::from_millis(250));
+            if find_image_file(l).is_some() {
+                return Ok((l, handle as usize));
+            }
+            return Ok((l, handle as usize));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    unsafe {
+        virtdisk::DetachVirtualDisk(handle, 0, 0);
+        CloseHandle(handle);
+    }
+    Err("Đã attach ISO bằng VirtDisk nhưng không thấy ký tự ổ DVD mới nào xuất hiện sau 10 giây.".to_string())
+}
+
+/// Mount ISO (ba lớp — xem khối chú thích ở đầu mục). Thành công
+/// trả ký tự ổ của volume ISO; mount được ghi vào sổ đăng ký để
+/// `dismount_iso` gỡ đúng cơ chế.
+fn mount_iso(iso: &Path) -> Result<char, String> {
+    // Sổ đăng ký còn giữ mount của chính tiến trình này (đọc lại
+    // cùng ISO) và gốc ổ còn truy cập được → dùng lại ngay.
+    if let Some(rec) = take_iso_mount(iso) {
+        if PathBuf::from(format!("{}:\\", rec.letter)).exists() {
+            let letter = rec.letter;
+            register_iso_mount(iso, rec);
+            return Ok(letter);
+        }
+        // Mount cũ đã chết (ai đó tháo ngoài) — gỡ nốt phần cứng
+        // còn treo rồi đi tiếp các lớp dưới.
+        if rec.kind == IsoMountKind::VirtDisk && rec.vdisk_handle != 0 {
+            unsafe {
+                let h = rec.vdisk_handle as winapi::um::winnt::HANDLE;
+                virtdisk::DetachVirtualDisk(h, 0, 0);
+                winapi::um::handleapi::CloseHandle(h);
+            }
+        }
+    }
+    // Lớp 1: đã gắn sẵn ở tầng hệ thống.
+    if let Some(letter) = iso_mounted_letter(iso) {
+        register_iso_mount(
+            iso,
+            IsoMountRec { kind: IsoMountKind::PowerShell, letter, vdisk_handle: 0 },
+        );
+        return Ok(letter);
+    }
+    // Lớp 2: PowerShell Mount-DiskImage (lỗi thật được giữ lại).
+    let ps_err = match mount_iso_powershell(iso) {
+        Ok(letter) => {
+            register_iso_mount(
+                iso,
+                IsoMountRec { kind: IsoMountKind::PowerShell, letter, vdisk_handle: 0 },
+            );
+            return Ok(letter);
+        }
+        Err(e) => e,
+    };
+    // Lớp 3: VirtDisk API gốc.
+    match mount_iso_virtdisk(iso) {
+        Ok((letter, handle)) => {
+            register_iso_mount(
+                iso,
+                IsoMountRec { kind: IsoMountKind::VirtDisk, letter, vdisk_handle: handle },
+            );
+            Ok(letter)
+        }
+        Err(vd_err) => Err(format!(
+            "Không mount được ISO bằng cả hai cơ chế.\n— PowerShell: {}\n— VirtDisk (API gốc của Windows): {}\nHãy kiểm tra file ISO có hỏng/không, đường dẫn có truy cập được không, rồi thử lại.",
+            ps_err, vd_err
+        )),
+    }
+}
+
+/// Gỡ mount ISO — ĐỐI XỨNG với cơ chế đã mount (xem sổ đăng ký):
+/// VirtDisk thì DetachVirtualDisk + đóng handle; PowerShell (hoặc
+/// không có trong sổ — mount từ tiến trình khác/lần chạy trước)
+/// thì Dismount-DiskImage như các bản trước. Lỗi gỡ mount không
+/// bao giờ chặn luồng chính (giữ đúng hành vi cũ).
 fn dismount_iso(iso: &Path) {
+    let rec = take_iso_mount(iso);
+    if let Some(rec) = &rec {
+        if rec.kind == IsoMountKind::VirtDisk && rec.vdisk_handle != 0 {
+            unsafe {
+                let h = rec.vdisk_handle as winapi::um::winnt::HANDLE;
+                virtdisk::DetachVirtualDisk(h, 0, 0);
+                winapi::um::handleapi::CloseHandle(h);
+            }
+        }
+    }
+    // Dismount-DiskImage chạy cho mount PowerShell; với mount
+    // VirtDisk nó chỉ là dọn dẹp vô hại (ảnh đã detach ở trên thì
+    // lệnh này không còn gì để gỡ và được SilentlyContinue bỏ qua).
     let path_s = iso.to_string_lossy().replace('\'', "''");
     let script = format!(
         "Dismount-DiskImage -ImagePath '{}' -ErrorAction SilentlyContinue",
         path_s
     );
-    let _ = cmd::run_capture(
-        "powershell",
-        &["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script],
-    );
+    let _ = run_powershell(&script);
 }
 
 /// Tìm file image trong ISO đã mount: install.wim / .esd / .swm
@@ -2848,8 +3234,8 @@ NẾU WINPE KHÔNG LÊN ĐƯỢC
 /// tại (cơ chế staging/WinPE của v0.7.11 + chế độ phân vùng
 /// rebuild của v0.7.13 + đóng gói lại WinPE một ảnh của
 /// v0.7.15 + engine tự gán ký tự ổ cho phân vùng boot sau khi
-/// chia của v0.7.16). Bản sao dạng markdown:
-/// docs/co_che_v0.7.16.md.
+/// chia của v0.7.16 + mount ISO ba lớp của v0.7.17). Bản sao
+/// dạng markdown: docs/co_che_v0.7.17.md.
 const TAI_LIEU_TEXT: &str = r#"TÀI LIỆU CƠ CHẾ — CÀI MỚI QUA WINPE (cơ chế của bản build hiện tại)
 
 Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài mới từ xa (qua WinPE)". Quá trình gồm hai giai đoạn: chuẩn bị (staging) chạy trong Windows hiện tại bằng wizard này, và cài thật chạy trong WinPE bằng engine WinPEInstall.exe.
@@ -2858,6 +3244,7 @@ Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài 
 - Mọi thứ cần cho ca cài được chép vào thư mục staging (mặc định QSU-Stage) trên ổ Data: bộ nguồn sources, winpe.wim đã inject, boot.sdi, driver, autounattend.xml, thư mục custom và file stage.json.
 - Ổ Data được đánh dấu bằng file marker ".qsu_data_drive" ở gốc ổ. Khi vào WinPE — nơi ký tự ổ được gán lại khác hẳn — engine tìm ổ Data bằng marker này, rồi đối chiếu serial phân vùng ghi trong stage.json.
 - stage.json là "hợp đồng" giữa wizard và engine: phiên bản Windows + index, chế độ boot (UEFI/Legacy), chế độ phân vùng, serial phân vùng OS, serial đĩa đích, GUID mục BCD, tên máy, tài khoản. stage.json KHÔNG chứa mật khẩu (mật khẩu chỉ nằm trong autounattend.xml) và không chứa danh sách ứng dụng hậu cài.
+- Nguồn sources được đọc từ ISO đã mount. Mount ISO có BA LỚP (từ v0.7.17): (1) ISO đã gắn sẵn (lần đọc trước, Explorer...) thì dùng lại ký tự ổ, đọc trạng thái qua Get-DiskImage; (2) mount bằng PowerShell Mount-DiskImage với lỗi ép thành lỗi dừng (terminating) — lỗi thật của cmdlet hiện nguyên văn trong hộp thoại thay vì thông báo rỗng như các bản trước; (3) nếu tầng PowerShell/cmdlet Storage không mount được (hay gặp trên các bản Windows lite bị cắt thành phần), wizard mount thẳng bằng VirtDisk API của Windows: mở ảnh ISO ở chế độ đọc-chỉ-đọc rồi dò ký tự ổ DVD mới xuất hiện sau khi gắn. Gỡ mount đối xứng theo đúng cơ chế đã mount: Dismount-DiskImage với mount PowerShell, DetachVirtualDisk với mount VirtDisk.
 
 2. CHỌN ẢNH WINPE TRONG boot.wim
 - boot.wim của ISO thường có 2 ảnh: "Microsoft Windows PE" và "Microsoft Windows Setup". Wizard chọn ảnh để mount và inject theo thứ tự: (1) "Boot Index" do header của WIM ghi sẵn — chính là ảnh mà bộ cài của Microsoft sẽ boot; (2) nếu header không mang Boot Index (hay gặp ở ISO mod đóng gói lại), chọn theo TÊN ảnh chứa "Windows PE" và không chứa "Setup".
@@ -3125,6 +3512,12 @@ struct App {
     lbl_disk_warn: nwg::Label,
     lbl_serial_cap: nwg::Label,
     inp_disk_serial: nwg::TextInput,
+    /// Dòng định danh đĩa đích đầy đủ (số đĩa — model — dung lượng
+    /// — serial, KHÔNG cắt) ngay trên ô nhập serial (v0.7.17).
+    lbl_disk_id: nwg::Label,
+    /// Phản hồi trực tiếp cạnh ô nhập serial: đã khớp / chưa khớp
+    /// serial đĩa đích theo từng ký tự gõ (v0.7.17).
+    lbl_serial_fb: nwg::Label,
     btn_tweaks: nwg::Button,
     btn_start: nwg::Button,
     btn_close: nwg::Button,
@@ -3380,6 +3773,15 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
     nwg::ComboBox::builder().parent(&tab_opt).build(&mut cmb_disk).expect("combo");
     cmb_disk.set_position(274, 110);
     cmb_disk.set_size(366, 24);
+    // Danh sách xổ xuống rộng hơn hẳn ô chọn (v0.7.17): dòng chọn
+    // chứa số đĩa — model — dung lượng — serial — kiểu đĩa nên
+    // với bề rộng ô mặc định serial bị cắt mất (thực địa: kỹ
+    // thuật viên không thấy serial đĩa đích để gõ xác nhận).
+    if let Some(hwnd) = cmb_disk.handle.hwnd() {
+        unsafe {
+            SendMessageW(hwnd, winapi::um::winuser::CB_SETDROPPEDWIDTH, 780, 0);
+        }
+    }
     // Gợi ý tĩnh trong chế độ wipe: xoá theo ĐĨA VẬT LÝ, không theo
     // ký tự ổ — tránh nhầm lẫn kiểu "chọn ổ C đúng không" khi ổ C và
     // ổ dữ liệu nằm chung một đĩa (khi đó đĩa đó bị cấm, phải giữ
@@ -3413,46 +3815,57 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
         });
     }
     let lbl_disk_warn = add_label!(&tab_opt, "", font_small, (652, 190), (317, 104));
-    let lbl_serial_cap = add_label!(&tab_opt, "Nhập serial của ổ đĩa đích để xác nhận XOÁ TOÀN BỘ:", font_normal, (8, 302), (434, 22));
+    // Dòng định danh đĩa đích ĐẦY ĐỦ ngay trên ô nhập serial
+    // (v0.7.17): số đĩa — model — dung lượng — serial trọn vẹn
+    // trên một dòng rộng hết trang, không bị cắt như trong ô chọn
+    // đĩa; nội dung do `update_serial_ui` đổ theo đĩa đang chọn.
+    let lbl_disk_id = add_label!(&tab_opt, "", font_normal, (8, 300), (961, 22));
+    let lbl_serial_cap = add_label!(&tab_opt, "Nhập serial của ổ đĩa đích để xác nhận XOÁ TOÀN BỘ:", font_normal, (8, 328), (434, 22));
     let mut inp_disk_serial = Default::default();
     nwg::TextInput::builder().font(Some(font_normal)).parent(&tab_opt).build(&mut inp_disk_serial).expect("input");
-    inp_disk_serial.set_position(446, 300);
+    inp_disk_serial.set_position(446, 326);
     inp_disk_serial.set_size(214, 26);
+    // LƯU Ý: ô nhập serial KHÔNG đặt ES_PASSWORD — serial phải
+    // hiện rõ từng ký tự đang gõ để đối chiếu với dòng định danh
+    // bên trên (khác hẳn hai ô mật khẩu ở dưới, có che).
+    // Nhãn phản hồi trực tiếp ngay cạnh ô nhập (v0.7.17): gõ tới
+    // đâu biết khớp hay chưa tới đó — `update_serial_feedback`.
+    let lbl_serial_fb = add_label!(&tab_opt, "", font_small, (668, 328), (301, 22));
 
-    let _lc = add_label!(&tab_opt, "Tên máy tính:", font_normal, (8, 332), (130, 22));
+    let _lc = add_label!(&tab_opt, "Tên máy tính:", font_normal, (8, 358), (130, 22));
     let mut inp_computer = Default::default();
     nwg::TextInput::builder().font(Some(font_normal)).parent(&tab_opt).build(&mut inp_computer).expect("input");
-    inp_computer.set_position(142, 330);
+    inp_computer.set_position(142, 356);
     inp_computer.set_size(220, 24);
-    let _lu = add_label!(&tab_opt, "Tài khoản admin:", font_normal, (378, 332), (140, 22));
+    let _lu = add_label!(&tab_opt, "Tài khoản admin:", font_normal, (378, 358), (140, 22));
     let mut inp_user = Default::default();
     nwg::TextInput::builder().font(Some(font_normal)).parent(&tab_opt).build(&mut inp_user).expect("input");
-    inp_user.set_position(522, 330);
+    inp_user.set_position(522, 356);
     inp_user.set_size(190, 24);
 
-    let _lp = add_label!(&tab_opt, "Mật khẩu (để trống = không đặt mật khẩu):", font_normal, (8, 360), (330, 22));
+    let _lp = add_label!(&tab_opt, "Mật khẩu (để trống = không đặt mật khẩu):", font_normal, (8, 386), (330, 22));
     let mut inp_pw1 = Default::default();
     nwg::TextInput::builder().font(Some(font_normal)).parent(&tab_opt).build(&mut inp_pw1).expect("input");
-    inp_pw1.set_position(342, 358);
+    inp_pw1.set_position(342, 384);
     inp_pw1.set_size(170, 24);
     set_edit_style(inp_pw1.handle.hwnd(), ES_PASSWORD);
-    let _lp2 = add_label!(&tab_opt, "Nhập lại mật khẩu:", font_normal, (528, 360), (140, 22));
+    let _lp2 = add_label!(&tab_opt, "Nhập lại mật khẩu:", font_normal, (528, 386), (140, 22));
     let mut inp_pw2 = Default::default();
     nwg::TextInput::builder().font(Some(font_normal)).parent(&tab_opt).build(&mut inp_pw2).expect("input");
-    inp_pw2.set_position(672, 358);
+    inp_pw2.set_position(672, 384);
     inp_pw2.set_size(150, 24);
     set_edit_style(inp_pw2.handle.hwnd(), ES_PASSWORD);
     let _pw_note = add_label!(
         &tab_opt,
         "(Chỉ cài mới. Không ghi vào log.)",
-        font_small, (830, 360), (139, 32)
+        font_small, (830, 386), (139, 32)
     );
 
     let mut btn_tweaks = Default::default();
     nwg::Button::builder().text("Tuỳ chỉnh Windows sau cài: TẮT").font(Some(font_button)).parent(&tab_opt).build(&mut btn_tweaks).expect("btn");
-    btn_tweaks.set_position(8, 388);
+    btn_tweaks.set_position(8, 414);
     btn_tweaks.set_size(320, 32);
-    let lbl_stage_info = add_label!(&tab_opt, "", font_small, (340, 392), (629, 22));
+    let lbl_stage_info = add_label!(&tab_opt, "", font_small, (340, 418), (629, 22));
 
     // --- Tiến trình + log + nút hành động (sân chính, GHIM dưới
     // khung tab — luôn nhìn thấy và bấm được ở cả hai tab) ---
@@ -3554,8 +3967,10 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
     lay!(lbl_disk_hint, GROUP_TAB2, XMode::Fixed, WMode::Grow, None);
     lay!(lst_disk_parts, GROUP_TAB2, XMode::Fixed, WMode::Grow, Some(FLEX_PARTS));
     lay!(lbl_disk_warn, GROUP_TAB2, XMode::ShiftRight, WMode::Fixed, None);
+    lay!(lbl_disk_id, GROUP_TAB2, XMode::Fixed, WMode::Grow, None);
     lay!(lbl_serial_cap, GROUP_TAB2, XMode::Fixed, WMode::Fixed, None);
     lay!(inp_disk_serial, GROUP_TAB2, XMode::Fixed, WMode::Grow, None);
+    lay!(lbl_serial_fb, GROUP_TAB2, XMode::ShiftRight, WMode::Fixed, None);
     lay!(_lc, GROUP_TAB2, XMode::Fixed, WMode::Fixed, None);
     lay!(inp_computer, GROUP_TAB2, XMode::Fixed, WMode::Fixed, None);
     lay!(_lu, GROUP_TAB2, XMode::Fixed, WMode::Fixed, None);
@@ -3609,6 +4024,7 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
         btn_mode_inplace, btn_mode_clean, btn_tweaks, btn_start, btn_close,
         btn_part_preserve, btn_part_wipe, btn_part_rebuild,
         lbl_disk_cap, cmb_disk, lbl_disk_hint, lst_disk_parts, lbl_disk_warn, lbl_serial_cap, inp_disk_serial,
+        lbl_disk_id, lbl_serial_fb,
         model: RefCell::new(Model {
             settings,
             exe_dir,
@@ -4094,6 +4510,8 @@ fn update_part_ui(app: &Rc<App>) {
     set_ctrl_visible(&app.lbl_disk_warn.handle, show_disk);
     set_ctrl_visible(&app.lbl_serial_cap.handle, show_disk);
     set_ctrl_visible(&app.inp_disk_serial.handle, show_disk);
+    set_ctrl_visible(&app.lbl_disk_id.handle, show_disk);
+    set_ctrl_visible(&app.lbl_serial_fb.handle, show_disk);
     if show_disk {
         match mode {
             PartMode::WipeDisk => {
@@ -4391,11 +4809,64 @@ fn enforce_rebuild_checks(app: &Rc<App>) {
     }
 }
 
+/// Dòng định danh đĩa đích + phản hồi khớp serial (v0.7.17).
+/// Thực địa: ô chọn đĩa hẹp nên dòng định danh bị cắt đúng ở
+/// phần serial — kỹ thuật viên không thấy serial đĩa đích để gõ
+/// xác nhận, gõ xong cũng không biết đã khớp chưa cho tới khi
+/// bấm TIẾN HÀNH mới bị hộp thoại chặn. Nay: (1) dòng định danh
+/// ĐẦY ĐỦ (số đĩa — model — dung lượng — serial) hiện ngay trên
+/// ô nhập, cập nhật mỗi lần đĩa chọn thay đổi; (2) nhãn cạnh ô
+/// nhập phản hồi TRỰC TIẾP theo từng ký tự. So khớp dùng đúng
+/// `normalize_disk_serial` như chốt kiểm tra lúc bấm TIẾN HÀNH
+/// (bỏ ký tự lạ + không phân biệt hoa thường) nên phản hồi và
+/// chốt chặn không bao giờ lệch nhau.
+fn update_serial_ui(app: &Rc<App>) {
+    match selected_disk(app) {
+        Some(d) => {
+            app.lbl_disk_id.set_text(&format!(
+                "Đĩa đích: Đĩa {} — {} — {} — serial {}",
+                d.number,
+                if d.model.trim().is_empty() { "(không rõ model)" } else { d.model.trim() },
+                sys::format_gb(d.size),
+                if d.serial.trim().is_empty() { "(không đọc được)" } else { d.serial.trim() },
+            ));
+        }
+        None => {
+            app.lbl_disk_id.set_text("Đĩa đích: (chưa chọn đĩa)");
+        }
+    }
+    update_serial_feedback(app);
+}
+
+/// Phản hồi khớp serial theo nội dung HIỆN TẠI của ô nhập:
+/// trống → không hiện gì; khớp (theo normalize_disk_serial) →
+/// "Đã khớp"; còn lại → "Chưa khớp".
+fn update_serial_feedback(app: &Rc<App>) {
+    let typed = app.inp_disk_serial.text();
+    if typed.trim().is_empty() {
+        app.lbl_serial_fb.set_text("");
+        return;
+    }
+    let matched = match selected_disk(app) {
+        Some(d) => {
+            let want = disk::normalize_disk_serial(&d.serial);
+            !want.is_empty() && disk::normalize_disk_serial(&typed) == want
+        }
+        None => false,
+    };
+    app.lbl_serial_fb.set_text(if matched {
+        "✓ Đã khớp serial đĩa đích"
+    } else {
+        "✗ Chưa khớp serial đĩa đích"
+    });
+}
+
 /// Đổ danh sách phân vùng của đĩa đang chọn + cảnh báo theo chế độ:
 /// wipeDisk = danh sách thuần hiển thị; rebuild = danh sách có
 /// checkbox (hệ thống tick sẵn, Windows cũ khoá tick, staging +
 /// data khoá không-tick — xem `classify_partition`).
 fn update_disk_parts(app: &Rc<App>) {
+    update_serial_ui(app);
     snapshot_rebuild_checks(app);
     let disks_empty = {
         let m = app.model.borrow();
@@ -5260,6 +5731,13 @@ fn handle_event(app: &Rc<App>, evt: nwg::Event, handle: nwg::ControlHandle) {
                 }
             } else if handle == app.lst_ed.handle {
                 update_ed_info(app);
+            }
+        }
+        nwg::Event::OnTextInput => {
+            // Phản hồi khớp serial TRỰC TIẾP theo từng ký tự gõ
+            // (v0.7.17) — xem `update_serial_feedback`.
+            if handle == app.inp_disk_serial.handle {
+                update_serial_feedback(app);
             }
         }
         nwg::Event::OnComboBoxClosed => {
