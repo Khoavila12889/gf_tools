@@ -101,12 +101,13 @@ pub struct StageConfig {
     pub ultraviewer_password: String,
     pub apply_tweaks: bool,
     /// Hồ sơ ảnh cài đặt (v0.7.21; định nghĩa CORE thay đổi ở
-    /// v0.7.22): "standard" (mặc định; stage.json cũ không có
-    /// trường này vẫn hiểu là standard) hoặc "core" — ảnh Windows
-    /// rút gọn kiểu Tiny11 Core: engine cài đúng công thức
-    /// WinNTSetup — không unattend, không inject driver, không
-    /// chép WinRE, không agent hậu cài/SetupComplete
-    /// (xem docs/co_che_v0.7.22.md).
+    /// v0.7.22 và v0.7.23): "standard" (mặc định; stage.json cũ
+    /// không có trường này vẫn hiểu là standard) hoặc "core" —
+    /// ảnh Windows rút gọn kiểu Tiny11 Core: engine cài theo
+    /// công thức WinNTSetup (không inject driver, không chép
+    /// WinRE, không agent hậu cài/SetupComplete) cộng
+    /// autounattend CHỈ chứa pha oobeSystem để ca cài vẫn tự
+    /// động (xem docs/co_che_v0.7.23.md).
     pub image_profile: String,
     /// Danh sách ứng dụng hậu cài đầy đủ (url/hash/args) — nhúng tại đây
     /// vì trên Windows mới không còn settings.json của wizard

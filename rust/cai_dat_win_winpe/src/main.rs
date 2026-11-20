@@ -591,20 +591,28 @@ fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-// Hồ sơ CORE (v0.7.21, tham số `core_profile`): cho ảnh Windows
-// rút gọn kiểu Tiny11 Core — các ảnh này thiếu nhiều component mà
-// một unattend đầy đủ chạm tới, và thực địa cho thấy chúng boot
+// Hồ sơ CORE (tham số `core_profile`): cho ảnh Windows rút gọn
+// kiểu Tiny11 Core — các ảnh này thiếu nhiều component mà một
+// unattend đầy đủ chạm tới, và thực địa cho thấy chúng boot
 // vòng lỗi 0xEF khi cài bằng pipeline chuẩn nhưng lên ngon khi
-// cài tay tối thiểu kiểu WinNTSetup. Khác biệt của hồ sơ CORE:
-// unattend KHÔNG mang <FirstLogonCommands> (không lệnh dọn cờ
-// mật khẩu, không lệnh hậu cài); cờ "phải đổi mật khẩu ở lần
-// đăng nhập đầu" của tài khoản admin được dọn bằng
-// SetupComplete.cmd tối thiểu do module ghi vào
-// Windows\Setup\Scripts của bản Windows mới (chạy bằng quyền
-// SYSTEM ở cuối pha setup, TRƯỚC lần đăng nhập đầu — nên
-// AutoLogon vẫn vào thẳng desktop). Phần còn lại của unattend
-// (locale, tên máy, OOBE rút gọn, LocalAccount, AutoLogon) giữ
-// nguyên như hồ sơ standard.
+// cài tay tối thiểu kiểu WinNTSetup. Diễn tiến hồ sơ CORE:
+// v0.7.21 rút gọn unattend (bỏ FirstLogonCommands, dọn cờ mật
+// khẩu bằng SetupComplete.cmd) — vẫn 0xEF. v0.7.22 bỏ hẳn
+// unattend/driver/WinRE/agent — boot QUA được 0xEF (thực địa
+// 2026-11-20) nhưng phải ngồi bấm OOBE và nhập tên thủ công.
+// Từ v0.7.23, unattend của hồ sơ CORE CHỈ chứa pha oobeSystem
+// (pha specialize vắng hẳn): vẫn tự qua các màn hình thiết
+// lập, tự tạo LocalAccount và AutoLogon như hồ sơ standard —
+// tiêu chí của tool là cài TỰ ĐỘNG — trong khi mọi phần còn
+// lại giữ công thức WinNTSetup (không FirstLogonCommands,
+// không SetupComplete, không agent hậu cài; driver/WinRE do
+// engine/module bỏ qua ở tầng của chúng). Đánh đổi: không
+// đặt được tên máy và múi giờ (chỉ nằm ở pha specialize —
+// tên máy để Windows tự sinh, múi giờ theo mặc định của
+// ảnh); và không có lệnh dọn cờ "phải đổi mật khẩu ở lần
+// đăng nhập đầu" — nếu ảnh đặt cờ đó cho tài khoản tạo từ
+// unattend, lần đăng nhập đầu có thể dừng ở màn hình đổi
+// mật khẩu (để trống cả ba ô rồi Enter) như ca v0.7.18.
 fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_password: &str, core_profile: bool) -> String {
     let comp = xml_escape(computer_name);
     let user = xml_escape(admin_user);
@@ -661,10 +669,13 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
             post = xml_escape(qsu_common::post_install::FIRST_LOGON_COMMAND),
         )
     };
-    format!(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<unattend xmlns="urn:schemas-microsoft-com:unattend">
-  <settings pass="specialize">
+    // Pha specialize của hồ sơ standard. Hồ sơ CORE: vắng hẳn —
+    // unattend CORE chỉ còn pha oobeSystem (xem ghi chú đầu hàm).
+    let spec_block = if core_profile {
+        String::new()
+    } else {
+        format!(
+            r#"  <settings pass="specialize">
     <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
       <InputLocale>{input}</InputLocale>
       <SystemLocale>{locale}</SystemLocale>
@@ -676,7 +687,18 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
       <TimeZone>{tz}</TimeZone>
     </component>
   </settings>
-  <settings pass="oobeSystem">
+"#,
+            input = xml_escape(&st.input_locale),
+            locale = xml_escape(&st.locale),
+            ui = xml_escape(&st.ui_language),
+            tz = xml_escape(&st.timezone),
+            comp = comp,
+        )
+    };
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+{spec}  <settings pass="oobeSystem">
     <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
       <InputLocale>{input}</InputLocale>
       <SystemLocale>{locale}</SystemLocale>
@@ -709,11 +731,10 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
   </settings>
 </unattend>
 "#,
+        spec = spec_block,
         input = xml_escape(&st.input_locale),
         locale = xml_escape(&st.locale),
         ui = xml_escape(&st.ui_language),
-        tz = xml_escape(&st.timezone),
-        comp = comp,
         user = user,
         fl_block = fl_block,
     )
@@ -1305,12 +1326,26 @@ fn spawn_install(shared: SharedRef, sender: nwg::NoticeSender, plan: InstallPlan
 
         // --- Bước 4: autounattend vào Windows\Panther ---
         if plan.core_profile {
-            // Hồ sơ CORE (v0.7.22 — định nghĩa lại sau ca thực địa
-            // 2026-11-20): bản sao đúng công thức cài tay WinNTSetup
-            // đã kiểm chứng boot tốt — KHÔNG ghi unattend vào
-            // Panther (giữ nguyên luồng OOBE gốc của ảnh), KHÔNG
-            // agent hậu cài, KHÔNG SetupComplete.
-            log.line("[Cơ chế] Hồ sơ CORE (v0.7.22): KHÔNG ghi autounattend.xml vào Windows\\Panther, KHÔNG agent hậu cài, KHÔNG SetupComplete — bản Windows mới giữ nguyên luồng OOBE gốc của ảnh như khi cài tay bằng WinNTSetup.");
+            // Hồ sơ CORE (v0.7.23): ghi autounattend CHỈ-pha-OOBE
+            // (plan luôn sinh sẵn cho CORE) vào Panther để ca cài
+            // tự qua màn hình thiết lập + tạo tài khoản +
+            // AutoLogon; ngoài file đó ra giữ công thức
+            // WinNTSetup — KHÔNG agent hậu cài, KHÔNG
+            // SetupComplete, KHÔNG FirstLogonCommands.
+            if let Some(xml) = &plan.unattend_xml {
+                let panther = Path::new(&target_root).join("Windows").join("Panther");
+                let write_res = std::fs::create_dir_all(&panther).and_then(|_| {
+                    std::fs::write(panther.join("autounattend.xml"), xml)?;
+                    std::fs::write(panther.join("unattend.xml"), xml)
+                });
+                match write_res {
+                    Ok(_) => log.line("[Cơ chế] Hồ sơ CORE (v0.7.23): đã ghi autounattend (chỉ pha oobeSystem) vào Windows\\Panther — không agent hậu cài, không SetupComplete, không FirstLogonCommands."),
+                    Err(e) => {
+                        done(&shared, &sender, fail("Ghi autounattend.xml", e.to_string()));
+                        return;
+                    }
+                }
+            }
         } else if let Some(xml) = &plan.unattend_xml {
             if let Err(e) = qsu_common::post_install::write_to_windows(Path::new(&target_root)) {
                 done(&shared, &sender, fail("Chuẩn bị tự cài ứng dụng", e.to_string()));
@@ -1709,7 +1744,7 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
     // đúng công thức WinNTSetup (không unattend/driver/WinRE).
     let mut chk_core = Default::default();
     nwg::CheckBox::builder()
-        .text("Ảnh rút gọn (Tiny11 Core): cài như WinNTSetup — không unattend, không inject driver, không WinRE, vào OOBE gốc của ảnh")
+        .text("Ảnh rút gọn (Tiny11 Core): unattend chỉ pha OOBE (tự tạo tài khoản, khỏi ngồi bấm setup), không inject driver, không WinRE")
         .font(Some(f_normal))
         .parent(&window)
         .build(&mut chk_core)
@@ -2592,11 +2627,13 @@ fn build_plan(app: &Rc<App>, _for_format_confirm: bool) -> Option<InstallPlan> {
     // được mang sang InstallPlan, chỉ trạng thái có/không)
     let mut unattend_user = String::new();
     let mut unattend_passwordless = false;
-    // Hồ sơ CORE (v0.7.22): đọc độc lập với ô autounattend — CORE
-    // nghĩa là KHÔNG dùng unattend, nên không thể bắt buộc phải
-    // tick ô "Tự thiết lập Windows" mới bật được CORE như v0.7.21.
+    // Hồ sơ CORE: đọc độc lập với ô autounattend (v0.7.22). Từ
+    // v0.7.23, CORE luôn sinh unattend CHỈ-pha-OOBE từ các ô tài
+    // khoản (kể cả khi không tick "Tự thiết lập Windows") để ca
+    // cài tự qua màn hình thiết lập — tiêu chí của tool là cài
+    // TỰ ĐỘNG, không để kỹ thuật viên phải ngồi bấm OOBE.
     let core_profile = app.chk_core.check_state() == nwg::CheckBoxState::Checked;
-    let unattend_xml = if app.chk_unattend.check_state() == nwg::CheckBoxState::Checked {
+    let unattend_xml = if app.chk_unattend.check_state() == nwg::CheckBoxState::Checked || core_profile {
         let computer = app.inp_computer.text().trim().to_string();
         let user = app.inp_user.text().trim().to_string();
         let pw1 = app.inp_pw1.text();
@@ -2699,9 +2736,11 @@ fn confirm_install(plan: &InstallPlan) -> bool {
     // Dòng trạng thái tài khoản (chỉ khi có autounattend): không
     // đặt mật khẩu phải hiện rõ trong tóm tắt xác nhận (v0.7.2,
     // cùng câu chữ với wizard).
-    // Từ v0.7.22: hồ sơ CORE ghi đè unattend — có CORE là không
-    // có unattend thật, hộp xác nhận phải nói đúng như vậy.
-    let has_unattend = plan.unattend_xml.is_some() && !plan.core_profile;
+    // Từ v0.7.23: hồ sơ CORE vẫn có unattend thật (chỉ pha OOBE,
+    // plan luôn sinh cho CORE) nên dòng tài khoản hiện bình
+    // thường; khác biệt của CORE nằm ở dòng tóm tắt riêng bên
+    // dưới (không driver/WinRE/tự cài ứng dụng).
+    let has_unattend = plan.unattend_xml.is_some();
     let driver_line = if plan.core_profile {
         "Không (hồ sơ CORE bỏ qua)".to_string()
     } else {
@@ -2720,7 +2759,7 @@ fn confirm_install(plan: &InstallPlan) -> bool {
         String::new()
     };
     let account_line = if plan.core_profile {
-        format!("{}• Hồ sơ CORE (ảnh rút gọn Tiny11 Core): cài như WinNTSetup — KHÔNG unattend (vào OOBE gốc của ảnh), KHÔNG inject driver, KHÔNG chép WinRE, KHÔNG tự cài ứng dụng.\n", account_line)
+        format!("{}• Hồ sơ CORE (ảnh rút gọn Tiny11 Core): unattend CHỈ pha OOBE (tự qua màn hình thiết lập + tạo tài khoản + AutoLogon) — KHÔNG inject driver, KHÔNG chép WinRE, KHÔNG tự cài ứng dụng.\n", account_line)
     } else if has_unattend {
         format!("{}• Tự cài UltraViewer, Chrome, 7-Zip sau đăng nhập (cần Internet).\n", account_line)
     } else { account_line };

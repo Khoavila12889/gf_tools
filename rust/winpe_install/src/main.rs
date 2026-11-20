@@ -170,7 +170,7 @@ fn main() {
     // diện, không ảnh hưởng luồng cài đặt hay dòng console.
     let ui = ProgressUi::start();
     ui.set_phase("Đang khởi động engine cài đặt", 0);
-    progress::mirror_line("=== QSU WinPEInstall v0.7.22 — engine cài đặt trong WinPE ===");
+    progress::mirror_line("=== QSU WinPEInstall v0.7.23 — engine cài đặt trong WinPE ===");
     let code = run(&ui);
     if code == 0 {
         std::process::exit(0);
@@ -609,12 +609,27 @@ fn run(ui: &ProgressUi) -> i32 {
         return 12;
     }
     if core_profile {
-        // Hồ sơ CORE (v0.7.22 — định nghĩa lại sau ca thực địa
-        // 2026-11-20): bản sao đúng công thức cài tay WinNTSetup
-        // đã kiểm chứng boot tốt — KHÔNG chép unattend vào
-        // Panther (bản Windows mới giữ nguyên luồng OOBE gốc của
-        // ảnh), KHÔNG agent hậu cài, KHÔNG SetupComplete.
-        log.line("[Cơ chế] Hồ sơ CORE (v0.7.22): KHÔNG chép autounattend.xml vào Windows\\Panther, KHÔNG agent hậu cài, KHÔNG SetupComplete — bản Windows mới giữ nguyên luồng OOBE gốc của ảnh như khi cài tay bằng WinNTSetup.");
+        // Hồ sơ CORE (v0.7.23): chép autounattend CHỈ-pha-OOBE
+        // của wizard (nếu có trong staging) vào Panther để ca
+        // cài vẫn TỰ ĐỘNG qua màn hình thiết lập + tạo tài khoản
+        // + AutoLogon; ngoài file đó ra giữ đúng công thức
+        // WinNTSetup đã kiểm chứng boot qua 0xEF ở v0.7.22 —
+        // KHÔNG agent hậu cài, KHÔNG SetupComplete, KHÔNG
+        // inject driver, KHÔNG chép WinRE. Staging của v0.7.22
+        // (không có unattend) vẫn chạy được: khi đó cài thuần
+        // như WinNTSetup, vào OOBE gốc của ảnh.
+        let unattend_src = stage_dir.join("autounattend.xml");
+        if unattend_src.exists() {
+            for name in ["autounattend.xml", "unattend.xml"] {
+                if let Err(e) = std::fs::copy(&unattend_src, panther.join(name)) {
+                    log.line(&format!("LỖI: Không chép được autounattend.xml: {}", e));
+                    return 12;
+                }
+            }
+            log.line("[Cơ chế] Hồ sơ CORE (v0.7.23): đã chép autounattend (chỉ pha oobeSystem) vào Windows\\Panther — ngoài unattend này: KHÔNG agent hậu cài, KHÔNG SetupComplete, KHÔNG inject driver, KHÔNG chép WinRE (như WinNTSetup).");
+        } else {
+            log.line("[Cơ chế] Hồ sơ CORE (v0.7.23): staging không có autounattend.xml — cài thuần như WinNTSetup (OOBE gốc của ảnh).");
+        }
     } else {
         let unattend_src = stage_dir.join("autounattend.xml");
         if unattend_src.exists() {

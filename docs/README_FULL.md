@@ -1202,24 +1202,29 @@ Module `CaiDatWinWinPE` có bản sao `build_unattend()` độc lập với
 cùng các quy tắc trên (kể cả mật khẩu tuỳ chọn).
 
 **Hồ sơ CORE cho ảnh rút gọn (từ v0.7.21, định nghĩa lại ở
-v0.7.22, branch `tiny11-core-profile`)**: wizard (nút bật/tắt
-"Ảnh rút gọn (Tiny11 Core)" ở tab Tuỳ chọn) và module WinPE (ô
-tick độc lập) có tuỳ chọn hồ sơ triển khai cho ảnh rút gọn kiểu
-Tiny11 Core. Bản v0.7.21 (unattend bỏ khối `FirstLogonCommands`
-+ ghi `SetupComplete.cmd` dọn cờ mật khẩu) vẫn boot vòng 0xEF ở
-ca thực địa 2026-11-20, trong khi cài tay bằng WinNTSetup
-(không unattend, không nạp driver, không chép WinRE) lên bình
-thường — nên từ v0.7.22 hồ sơ CORE là bản sao đúng công thức
-cài tay đó: wizard **không sinh `autounattend.xml`**;
-engine/module **không chép unattend vào Panther** (bản Windows
-mới đi OOBE gốc của ảnh), **không inject driver** (cả staging
-lẫn `QSU-DriverBackup`), **không chép WinRE/reagentc**, **không
-agent hậu cài, không SetupComplete, bỏ qua cả PostInstall.exe
-nếu có trong staging**. `stage.json` vẫn ghi
-`imageProfile: "core"` (thiếu trường hiểu là `"standard"`).
-Đánh đổi: không có tài khoản tạo sẵn/AutoLogon, không tự cài
-ứng dụng sau đăng nhập. Cơ chế đầy đủ:
-`docs/co_che_v0.7.22.md` mục 14.
+v0.7.22 và v0.7.23, branch `tiny11-core-profile`)**: wizard
+(nút bật/tắt "Ảnh rút gọn (Tiny11 Core)" ở tab Tuỳ chọn) và
+module WinPE (ô tick độc lập) có tuỳ chọn hồ sơ triển khai
+cho ảnh rút gọn kiểu Tiny11 Core. Diễn tiến: v0.7.21 (unattend
+bỏ khối `FirstLogonCommands` + `SetupComplete.cmd` dọn cờ mật
+khẩu) vẫn 0xEF; v0.7.22 (bỏ hẳn unattend/driver/WinRE/agent —
+bản sao công thức WinNTSetup) boot QUA được 0xEF ở ca thực
+địa 2026-11-20 nhưng phải ngồi bấm OOBE thủ công. Từ v0.7.23
+hồ sơ CORE giữ công thức WinNTSetup đã kiểm chứng — **không
+inject driver** (cả staging lẫn `QSU-DriverBackup`), **không
+chép WinRE/reagentc**, **không agent hậu cài, không
+SetupComplete, bỏ qua cả PostInstall.exe nếu có trong
+staging** — và đưa tự động hoá quay lại bằng
+`autounattend.xml` **chỉ chứa pha `oobeSystem`** (locale, cờ
+bỏ qua màn hình thiết lập, `LocalAccount`, `AutoLogon`;
+không pha `specialize`, không `FirstLogonCommands`) do
+wizard/module sinh và engine/module chép vào Panther.
+`stage.json` vẫn ghi `imageProfile: "core"` (thiếu trường
+hiểu là `"standard"`). Đánh đổi: tên máy/múi giờ không đặt
+được (chỉ nằm ở specialize), có thể gặp màn hình đổi mật
+khẩu ở lần đăng nhập đầu như ca v0.7.18, không tự cài ứng
+dụng sau đăng nhập. Cơ chế đầy đủ:
+`docs/co_che_v0.7.23.md` mục 15.
 
 ### 4.10. Driver: sao lưu và inject — ranh giới thật
 
@@ -1639,6 +1644,7 @@ Mỗi phiên bản một dòng, theo `BUILD_NOTES.md` và các gói phát hành
 | v0.7.20 | 2026-11-18 | **Chuẩn hoá giao diện toàn bộ (chỉ lớp trình bày — hành vi không đổi)**: thêm design system `qsu_common::ui` (sáu font chuẩn Segoe UI/Consolas dạng getter thay 10 bản sao chép tay, token lề 16/khe 8/header (16,8)+(16,40)/nút cao 32/ô nhập 28, `add_header`, `make_primary` cho một nút chính mỗi cửa sổ, hộp thoại chuẩn) và icon cửa sổ chung `qsu.ico` nhúng trong qsu_common cho mọi cửa sổ. Launcher: header về toạ độ chuẩn, lưới nút dùng một công thức cho cả dựng/lọc, icon đủ **32/32** nút (9 glyph gốc giữ toạ độ + 23 glyph mới cùng ngôn ngữ nét 2px mực thép xanh RGB(40,93,145), sinh bởi `packaging/draw-icons.py`). Các module gom font/header/icon; ô log kỹ thuật về Consolas; hàng nút hành động đồng đều 32; cột nội dung của Tắt BitLocker/Sao Lưu Wifi dịch lề 14→16. Ngoại lệ có ghi trong chuẩn: header wizard giữ (16,6)/(16,36) vì khung tab ở y=60; màn tiến trình WinPE toàn màn hình giữ nguyên thiết kế v0.7.18; engine WinPEInstall không sửa mã nguồn (build lại vì thư viện chung mở rộng). Chuẩn + rà soát từng cửa sổ: `docs/chuan_giao_dien.md`. |
 | v0.7.21 | 2026-11-20 | **Hồ sơ CORE cho ảnh rút gọn (Tiny11 Core)** — trên branch `tiny11-core-profile` (main giữ v0.7.20 làm đường lui): tuỳ chọn triển khai tối thiểu cho ảnh rút gọn vốn boot vòng CRITICAL_PROCESS_DIED (0xEF) khi cài bằng hồ sơ chuẩn nhưng lên ngon khi cài tay kiểu WinNTSetup. Wizard thêm nút "Ảnh rút gọn (Tiny11 Core)" ở tab Tuỳ chọn; module WinPE thêm ô tick tương ứng. `build_unattend()` (cả hai bản sao, đồng bộ) thêm tham số hồ sơ: chuẩn = khối `FirstLogonCommands` giữ nguyên từng byte; CORE = bỏ hẳn khối đó. `stage.json` thêm trường `imageProfile` (core/standard, mặc định standard, tương thích ngược). Engine WinPEInstall + module WinPE: hồ sơ CORE bỏ qua bước chuẩn bị agent hậu cài, ghi `Windows\Setup\Scripts\SetupComplete.cmd` tối thiểu (`net user <admin> /logonpasswordchg:no`; nối thêm nếu ảnh đã có sẵn file) để dọn cờ đổi mật khẩu ở cuối pha setup, trước lần đăng nhập đầu. Tài liệu: `docs/co_che_v0.7.21.md` mục 13; tab Tài liệu của wizard đồng bộ từng chữ. |
 | v0.7.22 | 2026-11-20 | **Định nghĩa lại hồ sơ CORE + layout chia đĩa theo công thức cài tay** (branch `tiny11-core-profile`): ca thực địa v0.7.21 vẫn 0xEF, nên hồ sơ CORE thành bản sao đúng công thức WinNTSetup đã kiểm chứng — wizard không sinh `autounattend.xml`, engine/module không chép unattend (OOBE gốc của ảnh), không inject driver (staging + `QSU-DriverBackup`), không chép WinRE/reagentc, không agent/SetupComplete/PostInstall; ô tick CORE của module độc lập với ô unattend. Layout wipe/rebuild GPT đổi: EFI 260MB + MSR 500MB + **Recovery 1024MB đặt trước** + Windows (MBR: Recovery 600→1024MB) — Recovery 600MB cũ không đủ chỗ chép Winre.wim (log 2026-11-19, os error 112). Tài liệu: `docs/co_che_v0.7.22.md` mục 14; tab Tài liệu của wizard đồng bộ từng chữ. |
+| v0.7.23 | 2026-11-20 | **Hồ sơ CORE lấy lại tự động hoá: unattend CHỈ pha oobeSystem** (branch `tiny11-core-profile`): ca thực địa v0.7.22 boot QUA 0xEF (công thức thuần WinNTSetup xác nhận) nhưng phải ngồi bấm OOBE + nhập tên thủ công — trái tiêu chí cài tự động. Từ v0.7.23: wizard/module sinh `autounattend.xml` rút gọn chỉ chứa pha `oobeSystem` (bỏ hẳn `specialize` + `FirstLogonCommands`) cho hồ sơ CORE, engine/module chép vào Panther; các phần còn lại giữ nguyên công thức WinNTSetup (không inject driver, không WinRE, không agent/SetupComplete). Module: tick CORE tự sinh unattend từ các ô tài khoản, không cần tick "Tự thiết lập Windows". Đánh đổi: tên máy tự sinh, múi giờ theo ảnh, có thể gặp màn hình đổi mật khẩu lần đăng nhập đầu (ca v0.7.18). Tài liệu: `docs/co_che_v0.7.23.md` mục 15; tab Tài liệu của wizard đồng bộ từng chữ. |
 
 ---
 

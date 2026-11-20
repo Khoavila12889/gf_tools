@@ -1607,20 +1607,28 @@ fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-// Hồ sơ CORE (v0.7.21, tham số `core_profile`): cho ảnh Windows
-// rút gọn kiểu Tiny11 Core — các ảnh này thiếu nhiều component mà
-// một unattend đầy đủ chạm tới, và thực địa cho thấy chúng boot
+// Hồ sơ CORE (tham số `core_profile`): cho ảnh Windows rút gọn
+// kiểu Tiny11 Core — các ảnh này thiếu nhiều component mà một
+// unattend đầy đủ chạm tới, và thực địa cho thấy chúng boot
 // vòng lỗi 0xEF khi cài bằng pipeline chuẩn nhưng lên ngon khi
-// cài tay tối thiểu kiểu WinNTSetup. Khác biệt của hồ sơ CORE:
-// unattend KHÔNG mang <FirstLogonCommands> (không lệnh dọn cờ
-// mật khẩu, không lệnh hậu cài); cờ "phải đổi mật khẩu ở lần
-// đăng nhập đầu" của tài khoản admin được dọn bằng
-// SetupComplete.cmd tối thiểu do engine/module ghi vào
-// Windows\Setup\Scripts của bản Windows mới (chạy bằng quyền
-// SYSTEM ở cuối pha setup, TRƯỚC lần đăng nhập đầu — nên
-// AutoLogon vẫn vào thẳng desktop). Phần còn lại của unattend
-// (locale, tên máy, OOBE rút gọn, LocalAccount, AutoLogon) giữ
-// nguyên như hồ sơ standard.
+// cài tay tối thiểu kiểu WinNTSetup. Diễn tiến hồ sơ CORE:
+// v0.7.21 rút gọn unattend (bỏ FirstLogonCommands, dọn cờ mật
+// khẩu bằng SetupComplete.cmd) — vẫn 0xEF. v0.7.22 bỏ hẳn
+// unattend/driver/WinRE/agent — boot QUA được 0xEF (thực địa
+// 2026-11-20) nhưng phải ngồi bấm OOBE và nhập tên thủ công.
+// Từ v0.7.23, unattend của hồ sơ CORE CHỈ chứa pha oobeSystem
+// (pha specialize vắng hẳn): vẫn tự qua các màn hình thiết
+// lập, tự tạo LocalAccount và AutoLogon như hồ sơ standard —
+// tiêu chí của tool là cài TỰ ĐỘNG — trong khi mọi phần còn
+// lại giữ công thức WinNTSetup (không FirstLogonCommands,
+// không SetupComplete, không agent hậu cài; driver/WinRE do
+// engine/module bỏ qua ở tầng của chúng). Đánh đổi: không
+// đặt được tên máy và múi giờ (chỉ nằm ở pha specialize —
+// tên máy để Windows tự sinh, múi giờ theo mặc định của
+// ảnh); và không có lệnh dọn cờ "phải đổi mật khẩu ở lần
+// đăng nhập đầu" — nếu ảnh đặt cờ đó cho tài khoản tạo từ
+// unattend, lần đăng nhập đầu có thể dừng ở màn hình đổi
+// mật khẩu (để trống cả ba ô rồi Enter) như ca v0.7.18.
 fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_password: &str, core_profile: bool) -> String {
     let comp = xml_escape(computer_name);
     let user = xml_escape(admin_user);
@@ -1677,10 +1685,13 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
             post = xml_escape(qsu_common::post_install::FIRST_LOGON_COMMAND),
         )
     };
-    format!(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<unattend xmlns="urn:schemas-microsoft-com:unattend">
-  <settings pass="specialize">
+    // Pha specialize của hồ sơ standard. Hồ sơ CORE: vắng hẳn —
+    // unattend CORE chỉ còn pha oobeSystem (xem ghi chú đầu hàm).
+    let spec_block = if core_profile {
+        String::new()
+    } else {
+        format!(
+            r#"  <settings pass="specialize">
     <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
       <InputLocale>{input}</InputLocale>
       <SystemLocale>{locale}</SystemLocale>
@@ -1692,7 +1703,18 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
       <TimeZone>{tz}</TimeZone>
     </component>
   </settings>
-  <settings pass="oobeSystem">
+"#,
+            input = xml_escape(&st.input_locale),
+            locale = xml_escape(&st.locale),
+            ui = xml_escape(&st.ui_language),
+            tz = xml_escape(&st.timezone),
+            comp = comp,
+        )
+    };
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+{spec}  <settings pass="oobeSystem">
     <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
       <InputLocale>{input}</InputLocale>
       <SystemLocale>{locale}</SystemLocale>
@@ -1725,11 +1747,10 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
   </settings>
 </unattend>
 "#,
+        spec = spec_block,
         input = xml_escape(&st.input_locale),
         locale = xml_escape(&st.locale),
         ui = xml_escape(&st.ui_language),
-        tz = xml_escape(&st.timezone),
-        comp = comp,
         user = user,
         fl_block = fl_block,
     )
@@ -3144,11 +3165,19 @@ fn exec_clean(
     // --- autounattend.xml: 78%
     set_exec_progress(shared, sender, 78, "Sinh autounattend.xml...");
     if plan.core_profile {
-        // [Cơ chế] (v0.7.22): hồ sơ CORE — wizard KHÔNG sinh
-        // autounattend.xml vào staging: engine sẽ không chép bất
-        // kỳ unattend nào vào bản Windows mới, giữ nguyên luồng
-        // OOBE gốc của ảnh như khi cài tay bằng WinNTSetup.
-        log.line("[Cơ chế] Hồ sơ CORE (v0.7.22): wizard KHÔNG sinh autounattend.xml và stage.json ghi imageProfile=core — trong WinPE, engine chỉ bung ảnh + chốt boot: không unattend, không inject driver, không chép WinRE, không agent hậu cài/SetupComplete — đúng công thức cài tay WinNTSetup đã kiểm chứng boot tốt với ảnh rút gọn.");
+        // [Cơ chế] (v0.7.23): hồ sơ CORE — wizard sinh
+        // autounattend.xml CHỈ chứa pha oobeSystem (build_unattend
+        // với core_profile=true): ca cài vẫn tự động qua màn hình
+        // thiết lập + tạo tài khoản + AutoLogon như tiêu chí của
+        // tool, trong khi engine ngoài file này ra giữ đúng công
+        // thức WinNTSetup (không inject driver, không chép
+        // WinRE, không agent hậu cài/SetupComplete).
+        let unattend = build_unattend(settings, &plan.computer_name, &plan.admin_user, &plan.admin_password, true);
+        if let Err(e) = std::fs::write(stage_dir.join("autounattend.xml"), unattend) {
+            fail(format!("không ghi được autounattend.xml: {}", e));
+            return;
+        }
+        log.line("[Cơ chế] Hồ sơ CORE (v0.7.23): wizard đã sinh autounattend.xml CHỈ chứa pha oobeSystem (tự qua màn hình thiết lập + tạo tài khoản + AutoLogon; không pha specialize, không FirstLogonCommands) và stage.json ghi imageProfile=core — trong WinPE, engine chỉ chép unattend này: không inject driver, không chép WinRE, không agent hậu cài/SetupComplete.");
     } else {
         let unattend = build_unattend(settings, &plan.computer_name, &plan.admin_user, &plan.admin_password, plan.core_profile);
         // [Cơ chế] (v0.7.19): dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu" của tài khoản admin.
@@ -3376,15 +3405,13 @@ Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài 
 - Module Cài Đặt Win = WinPE bỏ phụ thuộc PowerShell khi chọn nguồn: file ISO được mount bằng VirtDisk API gốc (cùng cơ chế lớp 3 của mục 1, nay đặt trong thư viện dùng chung) rồi đọc thẳng sources\install.* — các WinPE phổ biến không có cmdlet Storage vẫn mount được ISO; gỡ mount đối xứng bằng DetachVirtualDisk khi đổi nguồn hoặc đóng module. Nếu chính VirtDisk cũng không attach được, thông báo hướng dẫn mount sẵn ISO bằng công cụ của WinPE rồi chọn/gõ thẳng file sources\install.wim (hoặc .esd/.swm) — đúng đường đã cứu ca thực địa. Nút "Chọn file..." nay mở TRÌNH DUYỆT FILE TÍCH HỢP của module (liệt kê mọi ổ đĩa, duyệt thư mục, lọc *.iso/*.wim/*.esd/*.swm, hiện tên file đầy đủ, nhấp đúp để chọn) thay cho hộp thoại file của Windows — hộp thoại đó không mở được trong các WinPE này; ô gõ đường dẫn trực tiếp vẫn dùng được như trước. Và sau bất kỳ lần nạp nguồn nào — thành công hay lỗi — các nút bấm đều được mở khoá lại: luồng nền được bọc bắt lỗi toàn diện và hộp thoại chỉ hiện sau khi trạng thái nút đã cập nhật, nút chỉ khoá trong lúc thao tác thật sự đang chạy (bản cũ từng kẹt nút "Nạp nguồn" sau một lần nạp lỗi, phải mở lại module).
 - autounattend.xml (cả wizard lẫn module WinPE sinh) nay mang hai lệnh chạy ở lần đăng nhập đầu cho tài khoản admin: net user <tên> /logonpasswordchg:no và đặt mật khẩu không hết hạn (PasswordNeverExpires qua PowerShell Set-LocalUser). Tài khoản Setup tạo từ unattend mang cờ "phải đổi mật khẩu ở lần đăng nhập đầu tiên" (pwdLastSet = 0) — thực địa bản v0.7.18 cho thấy AutoLogon bị chặn ở màn hình đổi mật khẩu (User name / Old password / New password) thay vì vào thẳng desktop. Hai lệnh này dọn cờ đó ngay ở lần đăng nhập đầu, áp dụng cả khi mật khẩu để trống lẫn khi có đặt, để ca cài hoàn toàn không cần người trông vẫn về được desktop.
 
-14. HỒ SƠ CORE CHO ẢNH RÚT GỌN — TINY11 CORE (v0.7.21, ĐỊNH NGHĨA LẠI Ở v0.7.22)
+15. HỒ SƠ CORE CHO ẢNH RÚT GỌN — TINY11 CORE (v0.7.21 → v0.7.22 → v0.7.23)
 
-Ảnh Windows rút gọn kiểu Tiny11 Core (chế từ ISO gốc Microsoft rồi cắt giảm component) boot vòng lỗi CRITICAL_PROCESS_DIED (0xEF) ở lần khởi động đầu khi cài bằng bộ công cụ này — ca thực địa 2026-11-20 cho thấy kể cả hồ sơ CORE của v0.7.21 (unattend rút gọn, bỏ FirstLogonCommands, dọn cờ mật khẩu bằng SetupComplete.cmd) vẫn lỗi — trong khi cài tay trong WinPE (chia phân vùng bằng MiniTool, bung ảnh bằng WinNTSetup, không unattend, không nạp thêm driver, không chép WinRE) thì lên bình thường. Từ v0.7.22, hồ sơ CORE là bản sao đúng công thức cài tay đã kiểm chứng đó. Wizard có nút bật/tắt "Ảnh rút gọn (Tiny11 Core)" ở tab Tuỳ chọn cài đặt, module Cài Đặt Win=WinPE có ô tick độc lập tương ứng; bật lên thì ca cài đi theo hồ sơ CORE:
-- Wizard KHÔNG sinh autounattend.xml; engine và module KHÔNG chép bất kỳ unattend nào vào Windows\Panther — bản Windows mới giữ nguyên luồng OOBE gốc của ảnh (tự tạo tài khoản ở màn hình thiết lập đầu như khi cài tay). stage.json ghi "imageProfile": "core" (hồ sơ chuẩn ghi "standard"; stage.json cũ không có trường này được hiểu là standard). Ở module WinPE, ô tick CORE độc lập với ô "Tự thiết lập Windows": đã tick CORE thì unattend (nếu có tick) cũng bị bỏ qua.
-- KHÔNG inject driver offline: cả driver lưu trữ trong staging lẫn bản sao lưu driver của Windows cũ (QSU-DriverBackup) đều không được nạp — ảnh giữ đúng bộ driver có sẵn trong ảnh.
-- KHÔNG chép WinRE vào phân vùng Recovery và không đăng ký reagentc: phân vùng Recovery vẫn được tạo theo layout mới (mục 5) nhưng để trống, như layout cài tay.
-- KHÔNG agent hậu cài, KHÔNG SetupComplete.cmd; PostInstall.exe nếu có trong staging cũng bị bỏ qua.
-- Phần engine/module còn làm: chia phân vùng theo layout mới (khi chọn xoá/chia lại đĩa), bung ảnh, chép thư mục custom nếu có (nguyên trạng, không bao giờ chạy), chốt boot bằng bcdboot và kiểm chứng file boot thật — cùng mọi cơ chế an toàn về đĩa và boot ở các mục 5, 6, 7, 12.
-- Đánh đổi: không có tài khoản admin tạo sẵn và AutoLogon — người cài đi qua OOBE gốc của ảnh và tự tạo tài khoản như khi cài tay; không tự cài ứng dụng sau đăng nhập. Cần tự động hoá đầy đủ (tài khoản sẵn, tự cài ứng dụng) thì dùng hồ sơ chuẩn với ảnh Windows đầy đủ."#;
+Ảnh Windows rút gọn kiểu Tiny11 Core (chế từ ISO gốc Microsoft rồi cắt giảm component) boot vòng lỗi CRITICAL_PROCESS_DIED (0xEF) ở lần khởi động đầu khi cài bằng hồ sơ chuẩn. Diễn tiến xử lý qua thực địa 2026-11-20: hồ sơ CORE của v0.7.21 (unattend rút gọn + SetupComplete.cmd) vẫn 0xEF; hồ sơ CORE của v0.7.22 (bỏ hẳn unattend, driver, WinRE, agent — bản sao đúng công thức cài tay WinNTSetup) boot QUA được 0xEF nhưng bản Windows mới vào OOBE gốc của ảnh, kỹ thuật viên phải ngồi bấm qua các màn hình thiết lập và nhập tên thủ công — trái tiêu chí cài TỰ ĐỘNG của bộ công cụ. Từ v0.7.23, hồ sơ CORE giữ phần công thức WinNTSetup đã kiểm chứng (không inject driver, không chép WinRE, không agent/SetupComplete) và đưa tự động hoá quay lại bằng một autounattend.xml CHỈ chứa pha oobeSystem:
+- Wizard sinh autounattend.xml rút gọn cho hồ sơ CORE và ghi vào staging; engine chép vào Windows\Panther như hồ sơ chuẩn. Module Cài Đặt Win=WinPE sinh cùng một nội dung (ô tick CORE độc lập — tick CORE là tự sinh unattend này từ các ô tài khoản, không cần tick thêm "Tự thiết lập Windows").
+- Nội dung unattend CORE: CHỈ pha oobeSystem — locale, các cờ bỏ qua màn hình thiết lập (EULA, tài khoản online, wifi), LocalAccount thuộc nhóm Administrators (mật khẩu tuỳ chọn như hồ sơ chuẩn) và AutoLogon 1 lần. KHÔNG có pha specialize, KHÔNG có FirstLogonCommands.
+- Đánh đổi: tên máy và múi giờ không đặt được (hai thiết lập này chỉ nằm ở pha specialize — tên máy để Windows tự sinh dạng DESKTOP-xxxxxxx, múi giờ theo mặc định của ảnh; đổi sau trong Windows nếu cần); không có lệnh dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu" — nếu ảnh đặt cờ đó cho tài khoản tạo từ unattend, lần đăng nhập đầu có thể dừng ở màn hình đổi mật khẩu (để trống cả ba ô rồi Enter) như ca thực địa v0.7.18; không tự cài ứng dụng sau đăng nhập.
+- stage.json ghi "imageProfile": "core" (hồ sơ chuẩn ghi "standard"; stage.json cũ không có trường này được hiểu là standard). Staging sinh bởi v0.7.22 (không có autounattend.xml) vẫn tương thích: engine khi đó cài thuần như WinNTSetup và vào OOBE gốc của ảnh."#;
 
 // ---------------------------------------------------------------------------
 // Trạng thái giao diện (luồng UI) + dựng cửa sổ
