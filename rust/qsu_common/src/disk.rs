@@ -23,9 +23,10 @@
 //! bản địa hoá). Mọi lỗi đều được ghi vào `DiskEnumeration::diag`.
 //!
 //! Phần WIPE sinh script diskpart chia lại đĩa từ đầu (GPT: EFI 260MB /
-//! MSR 16MB / Windows / Recovery 600MB chuẩn Microsoft; MBR: System
-//! Reserved 100MB / Windows / Recovery 600MB), chạy script, rồi xác
-//! minh lại bằng liệt kê thật. Đĩa đích luôn được nhận diện bằng SERIAL
+//! MSR 500MB / Recovery 1024MB / Windows — thứ tự và kích thước khớp
+//! công thức chia tay đã kiểm chứng thực địa với WinNTSetup, từ
+//! v0.7.22; MBR: System Reserved 100MB / Windows / Recovery 1024MB),
+//! chạy script, rồi xác minh lại bằng liệt kê thật. Đĩa đích luôn được nhận diện bằng SERIAL
 //! PHẦN CỨNG — không bao giờ chỉ bằng số thứ tự hay ký tự ổ.
 
 use std::ptr;
@@ -1101,15 +1102,19 @@ pub struct WipeLayout {
     pub recovery_mb: u64,
 }
 
-/// Tính layout chia đĩa theo chuẩn Microsoft. Trả None nếu đĩa quá
+/// Tính layout chia đĩa. Từ v0.7.22, kích thước khớp công thức
+/// chia tay đã kiểm chứng thực địa (MiniTool + WinNTSetup trên
+/// DESKTOP-704R89L): MSR 500MB và Recovery 1024MB — Recovery
+/// 600MB của các bản trước không đủ chỗ chép Winre.wim (log
+/// winpe-20261119-1909: lỗi os error 112). Trả None nếu đĩa quá
 /// nhỏ (phân vùng Windows còn lại < 20 GB).
 pub fn wipe_layout(disk_size: u64, uefi: bool) -> Option<WipeLayout> {
     if disk_size < MIN_WIPE_DISK_BYTES {
         return None;
     }
     let total_mb = disk_size / MB;
-    let (boot_mb, msr_mb) = if uefi { (260, 16) } else { (100, 0) };
-    let recovery_mb = 600;
+    let (boot_mb, msr_mb) = if uefi { (260, 500) } else { (100, 0) };
+    let recovery_mb = 1024;
     // Chừa ~4MB cho cấu trúc GPT/MBR + căn lề cuối đĩa
     let windows_mb = total_mb.checked_sub(boot_mb + msr_mb + recovery_mb + 4)?;
     if windows_mb < 20 * 1024 {
@@ -1136,14 +1141,14 @@ pub fn wipe_script(disk_number: u32, layout: &WipeLayout, uefi: bool) -> String 
              format quick fs=fat32 label=\"System\"\r\n\
              assign letter=S\r\n\
              create partition msr size={msr}\r\n\
-             create partition primary size={win}\r\n\
-             format quick fs=ntfs label=\"Windows\"\r\n\
-             assign letter=W\r\n\
              create partition primary size={rec}\r\n\
              format quick fs=ntfs label=\"Recovery\"\r\n\
              assign letter=R\r\n\
              set id=\"de94bba4-06d1-4d40-a16a-bfd50179d6ac\"\r\n\
              gpt attributes=0x8000000000000001\r\n\
+             create partition primary size={win}\r\n\
+             format quick fs=ntfs label=\"Windows\"\r\n\
+             assign letter=W\r\n\
              exit\r\n",
             n = disk_number,
             boot = layout.boot_mb,
@@ -1816,8 +1821,8 @@ pub fn execute_wipe(
 /// (boot + MSR + Recovery) + phân vùng Windows tối thiểu 10 GB.
 pub fn rebuild_layout(region_size: u64, uefi: bool) -> Option<WipeLayout> {
     let total_mb = region_size / MB;
-    let (boot_mb, msr_mb) = if uefi { (260, 16) } else { (100, 0) };
-    let recovery_mb = 600;
+    let (boot_mb, msr_mb) = if uefi { (260, 500) } else { (100, 0) };
+    let recovery_mb = 1024;
     let windows_mb = total_mb.checked_sub(boot_mb + msr_mb + recovery_mb)?;
     if windows_mb < 10 * 1024 {
         return None;
@@ -1861,14 +1866,14 @@ fn rebuild_script(
              format quick fs=fat32 label=\"System\"\r\n\
              assign letter=S\r\n\
              create partition msr size={msr} offset={o1}\r\n\
-             create partition primary size={win} offset={o2}\r\n\
-             format quick fs=ntfs label=\"Windows\"\r\n\
-             assign letter=W\r\n\
-             create partition primary size={rec} offset={o3}\r\n\
+             create partition primary size={rec} offset={o2}\r\n\
              format quick fs=ntfs label=\"Recovery\"\r\n\
              assign letter=R\r\n\
              set id=\"de94bba4-06d1-4d40-a16a-bfd50179d6ac\"\r\n\
              gpt attributes=0x8000000000000001\r\n\
+             create partition primary size={win} offset={o3}\r\n\
+             format quick fs=ntfs label=\"Windows\"\r\n\
+             assign letter=W\r\n\
              exit\r\n",
             boot = layout.boot_mb,
             msr = layout.msr_mb,
@@ -1877,7 +1882,7 @@ fn rebuild_script(
             o0 = start_kb,
             o1 = start_kb + mb_kb(layout.boot_mb),
             o2 = start_kb + mb_kb(layout.boot_mb + layout.msr_mb),
-            o3 = start_kb + mb_kb(layout.boot_mb + layout.msr_mb + layout.windows_mb),
+            o3 = start_kb + mb_kb(layout.boot_mb + layout.msr_mb + layout.recovery_mb),
         );
     } else {
         s += &format!(
@@ -2047,15 +2052,15 @@ pub fn execute_rebuild(
     // --- Đủ chỗ: kiểm tra TRƯỚC khi xoá bất cứ thứ gì ---
     let layout = rebuild_layout(region_size, uefi).ok_or_else(|| {
         format!(
-            "vùng hệ thống cũ ({}) quá nhỏ cho layout mới: cần tối thiểu {} (boot {}MB{} + Recovery 600MB + Windows tối thiểu 10GB). Dừng, KHÔNG xoá gì.",
+            "vùng hệ thống cũ ({}) quá nhỏ cho layout mới: cần tối thiểu {} (boot {}MB{} + Recovery 1024MB + Windows tối thiểu 10GB). Dừng, KHÔNG xoá gì.",
             sys::format_gb(region_size),
-            sys::format_gb((if uefi { 876 } else { 700 }) * MB + 10 * GB),
+            sys::format_gb((if uefi { 1784 } else { 1124 }) * MB + 10 * GB),
             if uefi { 260 } else { 100 },
-            if uefi { " + MSR 16MB" } else { "" },
+            if uefi { " + MSR 500MB" } else { "" },
         )
     })?;
     log.line(&format!(
-        "Vùng hệ thống cũ: offset {} → {} ({}). Layout mới {}: boot {}MB{} + Windows {}MB + Recovery {}MB.",
+        "Vùng hệ thống cũ: offset {} → {} ({}). Layout mới {}: boot {}MB{}, Windows {}MB, Recovery {}MB.",
         region_start,
         region_end,
         sys::format_gb(region_size),

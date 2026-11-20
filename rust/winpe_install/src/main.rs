@@ -170,7 +170,7 @@ fn main() {
     // diện, không ảnh hưởng luồng cài đặt hay dòng console.
     let ui = ProgressUi::start();
     ui.set_phase("Đang khởi động engine cài đặt", 0);
-    progress::mirror_line("=== QSU WinPEInstall v0.7.21 — engine cài đặt trong WinPE ===");
+    progress::mirror_line("=== QSU WinPEInstall v0.7.22 — engine cài đặt trong WinPE ===");
     let code = run(&ui);
     if code == 0 {
         std::process::exit(0);
@@ -608,43 +608,22 @@ fn run(ui: &ProgressUi) -> i32 {
         log.line(&format!("LỖI: Không tạo được thư mục Panther: {}", e));
         return 12;
     }
-    let unattend_src = stage_dir.join("autounattend.xml");
-    if unattend_src.exists() {
-        for name in ["autounattend.xml", "unattend.xml"] {
-            if let Err(e) = std::fs::copy(&unattend_src, panther.join(name)) {
-                log.line(&format!("LỖI: Không chép được cấu hình đăng nhập tự động: {}", e));
-                return 12;
-            }
-        }
-        if cfg.image_profile.eq_ignore_ascii_case("core") {
-            // Hồ sơ CORE (v0.7.21): bỏ qua agent hậu cài; ghi
-            // SetupComplete.cmd tối thiểu — một lệnh net user dọn
-            // cờ "phải đổi mật khẩu ở lần đăng nhập đầu", chạy bằng
-            // quyền SYSTEM ở cuối pha setup, trước lần đăng nhập
-            // đầu tiên. Nếu ảnh đã có sẵn SetupComplete.cmd thì nối
-            // thêm dòng, không ghi đè.
-            let scripts = Path::new(&os_root).join("Windows").join("Setup").join("Scripts");
-            let sc_line = format!("net user {} /logonpasswordchg:no", cfg.admin_user);
-            let sc_res = std::fs::create_dir_all(&scripts).and_then(|_| {
-                let sc = scripts.join("SetupComplete.cmd");
-                if sc.exists() {
-                    let mut cur = std::fs::read_to_string(&sc).unwrap_or_default();
-                    if !cur.ends_with('\n') {
-                        cur.push_str("\r\n");
-                    }
-                    cur.push_str(&sc_line);
-                    cur.push_str("\r\n");
-                    std::fs::write(&sc, cur)
-                } else {
-                    std::fs::write(&sc, format!("@echo off\r\n{}\r\n", sc_line))
+    if core_profile {
+        // Hồ sơ CORE (v0.7.22 — định nghĩa lại sau ca thực địa
+        // 2026-11-20): bản sao đúng công thức cài tay WinNTSetup
+        // đã kiểm chứng boot tốt — KHÔNG chép unattend vào
+        // Panther (bản Windows mới giữ nguyên luồng OOBE gốc của
+        // ảnh), KHÔNG agent hậu cài, KHÔNG SetupComplete.
+        log.line("[Cơ chế] Hồ sơ CORE (v0.7.22): KHÔNG chép autounattend.xml vào Windows\\Panther, KHÔNG agent hậu cài, KHÔNG SetupComplete — bản Windows mới giữ nguyên luồng OOBE gốc của ảnh như khi cài tay bằng WinNTSetup.");
+    } else {
+        let unattend_src = stage_dir.join("autounattend.xml");
+        if unattend_src.exists() {
+            for name in ["autounattend.xml", "unattend.xml"] {
+                if let Err(e) = std::fs::copy(&unattend_src, panther.join(name)) {
+                    log.line(&format!("LỖI: Không chép được cấu hình đăng nhập tự động: {}", e));
+                    return 12;
                 }
-            });
-            if let Err(e) = sc_res {
-                log.line(&format!("LỖI: Không ghi được SetupComplete.cmd: {}", e));
-                return 12;
             }
-            log.line("[Cơ chế] Hồ sơ CORE (v0.7.21): stage.json imageProfile=core — bỏ qua agent hậu cài, đã ghi SetupComplete.cmd tối thiểu (net user <tên> /logonpasswordchg:no) vào Windows\\Setup\\Scripts để dọn cờ 'phải đổi mật khẩu ở lần đăng nhập đầu' trước khi AutoLogon chạy.");
-        } else {
             if let Err(e) = qsu_common::post_install::write_to_windows(Path::new(&os_root)) {
                 log.line(&format!("LỖI: Không chuẩn bị được tự cài ứng dụng: {}", e));
                 return 12;
@@ -655,8 +634,8 @@ fn run(ui: &ProgressUi) -> i32 {
                 log.line(&format!("LỖI: Không chép được cấu hình Telegram: {}", e));
                 return 12;
             }
+            log.line("Đã copy autounattend.xml vào Windows\\Panther.");
         }
-        log.line("Đã copy autounattend.xml vào Windows\\Panther.");
     }
     let qsu_dir = Path::new(&os_root).join("ProgramData").join("QSU");
     let _ = std::fs::create_dir_all(&qsu_dir);
@@ -681,7 +660,9 @@ fn run(ui: &ProgressUi) -> i32 {
     // thì bỏ qua lặng lẽ.
     let post_src = stage_dir.join("PostInstall.exe");
     let post_dst = qsu_dir.join("PostInstall.exe");
-    if post_src.exists() {
+    if core_profile && post_src.exists() {
+        log.line("[Cơ chế] Hồ sơ CORE (v0.7.22): bỏ qua PostInstall.exe trong staging — hồ sơ CORE không đăng ký agent hậu cài.");
+    } else if post_src.exists() {
         let _ = std::fs::copy(&post_src, &post_dst);
         log.line("Đã copy PostInstall.exe vào ProgramData\\QSU.");
         // Đăng ký RunOnce trong SOFTWARE hive offline của bản Windows mới
@@ -734,14 +715,20 @@ fn run(ui: &ProgressUi) -> i32 {
 
     // --- WinRE vào phân vùng Recovery mới (wipeDisk §6b / rebuild) ---
     if wipe_mode || rebuild_mode {
-        match layout_recovery_letter {
-            Some(r) => {
-                ui.set_phase("Đang chép WinRE", 88);
-                disk::copy_winre(&log, os_letter, r);
+        if core_profile {
+            // Hồ sơ CORE (v0.7.22): không chép WinRE — phân vùng
+            // Recovery để trống như layout cài tay WinNTSetup.
+            log.line("[Cơ chế] Hồ sơ CORE (v0.7.22): bỏ qua chép WinRE vào phân vùng Recovery — để trống như layout cài tay WinNTSetup.");
+        } else {
+            match layout_recovery_letter {
+                Some(r) => {
+                    ui.set_phase("Đang chép WinRE", 88);
+                    disk::copy_winre(&log, os_letter, r);
+                }
+                None => log.line(
+                    "CẢNH BÁO: chế độ chia lại phân vùng nhưng phân vùng Recovery không có ký tự ổ — bỏ qua bước WinRE.",
+                ),
             }
-            None => log.line(
-                "CẢNH BÁO: chế độ chia lại phân vùng nhưng phân vùng Recovery không có ký tự ổ — bỏ qua bước WinRE.",
-            ),
         }
     }
 

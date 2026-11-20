@@ -3143,19 +3143,20 @@ fn exec_clean(
 
     // --- autounattend.xml: 78%
     set_exec_progress(shared, sender, 78, "Sinh autounattend.xml...");
-    let unattend = build_unattend(settings, &plan.computer_name, &plan.admin_user, &plan.admin_password, plan.core_profile);
     if plan.core_profile {
-        // [Cơ chế] (v0.7.21): hồ sơ CORE cho ảnh rút gọn — unattend
-        // không FirstLogonCommands; cờ mật khẩu do SetupComplete.cmd
-        // của engine dọn trước lần đăng nhập đầu.
-        log.line("[Cơ chế] Hồ sơ CORE (v0.7.21): autounattend.xml KHÔNG mang FirstLogonCommands và stage.json ghi imageProfile=core — engine sẽ bỏ qua agent hậu cài, thay bằng SetupComplete.cmd tối thiểu (net user <tên> /logonpasswordchg:no) ghi vào Windows\\Setup\\Scripts của bản Windows mới để dọn cờ 'phải đổi mật khẩu ở lần đăng nhập đầu' trước khi AutoLogon chạy.");
+        // [Cơ chế] (v0.7.22): hồ sơ CORE — wizard KHÔNG sinh
+        // autounattend.xml vào staging: engine sẽ không chép bất
+        // kỳ unattend nào vào bản Windows mới, giữ nguyên luồng
+        // OOBE gốc của ảnh như khi cài tay bằng WinNTSetup.
+        log.line("[Cơ chế] Hồ sơ CORE (v0.7.22): wizard KHÔNG sinh autounattend.xml và stage.json ghi imageProfile=core — trong WinPE, engine chỉ bung ảnh + chốt boot: không unattend, không inject driver, không chép WinRE, không agent hậu cài/SetupComplete — đúng công thức cài tay WinNTSetup đã kiểm chứng boot tốt với ảnh rút gọn.");
     } else {
-    // [Cơ chế] (v0.7.19): dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu" của tài khoản admin.
-    log.line("[Cơ chế] autounattend.xml mang hai lệnh FirstLogonCommands cho tài khoản admin — `net user <tên> /logonpasswordchg:no` và đặt PasswordNeverExpires: tài khoản Setup tạo từ unattend mang cờ phải đổi mật khẩu ở lần đăng nhập đầu (pwdLastSet=0), không dọn cờ thì AutoLogon bị chặn ở màn hình đổi mật khẩu thay vì vào thẳng desktop (thực địa v0.7.18). Lệnh chạy ở lần đăng nhập đầu, áp dụng cả khi mật khẩu để trống lẫn khi có đặt.");
-    }
-    if let Err(e) = std::fs::write(stage_dir.join("autounattend.xml"), unattend) {
-        fail(format!("không ghi được autounattend.xml: {}", e));
-        return;
+        let unattend = build_unattend(settings, &plan.computer_name, &plan.admin_user, &plan.admin_password, plan.core_profile);
+        // [Cơ chế] (v0.7.19): dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu" của tài khoản admin.
+        log.line("[Cơ chế] autounattend.xml mang hai lệnh FirstLogonCommands cho tài khoản admin — `net user <tên> /logonpasswordchg:no` và đặt PasswordNeverExpires: tài khoản Setup tạo từ unattend mang cờ phải đổi mật khẩu ở lần đăng nhập đầu (pwdLastSet=0), không dọn cờ thì AutoLogon bị chặn ở màn hình đổi mật khẩu thay vì vào thẳng desktop (thực địa v0.7.18). Lệnh chạy ở lần đăng nhập đầu, áp dụng cả khi mật khẩu để trống lẫn khi có đặt.");
+        if let Err(e) = std::fs::write(stage_dir.join("autounattend.xml"), unattend) {
+            fail(format!("không ghi được autounattend.xml: {}", e));
+            return;
+        }
     }
 
     // --- BCD boot một lần: 84%
@@ -3220,7 +3221,7 @@ fn exec_clean(
     log.line("[Cơ chế] Nhận diện ổ đích bằng SERIAL: stage.json ghi serial của phân vùng OS (và serial đĩa vật lý nếu xoá/chia lại phân vùng theo đĩa); trong WinPE, ngay trước khi format/xoá, engine đối chiếu lại serial thật — không khớp là dừng hẳn, không đoán theo ký tự ổ hay nhãn ổ. Riêng chế độ WIPE DISK, đĩa chứa ổ Data/staging bị cấm tuyệt đối làm đĩa đích; chế độ REBUILD cho phép trùng đĩa nhưng bảo vệ tuyệt đối phân vùng chứa staging.");
     match plan.part_mode {
         PartMode::WipeDisk => {
-            log.line("[Cơ chế] Chế độ phân vùng WIPE DISK: xoá toàn bộ đĩa đích, chia lại theo chuẩn Microsoft — UEFI/GPT: EFI 260MB FAT32 + MSR 16MB + Windows (phần còn lại) + Recovery 600MB chứa WinRE; Legacy/MBR: System Reserved 100MB (active) + Windows + Recovery 600MB (id 27).");
+            log.line("[Cơ chế] Chế độ phân vùng WIPE DISK: xoá toàn bộ đĩa đích, chia lại theo công thức đã kiểm chứng thực địa (v0.7.22) — UEFI/GPT: EFI 260MB FAT32 + MSR 500MB + Recovery 1024MB (đặt đúng GUID và thuộc tính phân vùng WinRE; hồ sơ chuẩn chép Winre.wim vào và đăng ký bằng reagentc, hồ sơ CORE để trống như cài tay) + Windows (phần còn lại); Legacy/MBR: System Reserved 100MB (active) + Windows + Recovery 1024MB (id 27).");
         }
         PartMode::Rebuild => {
             log.line("[Cơ chế] Chế độ phân vùng REBUILD: chỉ các phân vùng hệ thống đã liệt kê trong stage.json (rebuildPartitions — EFI, MSR, Windows cũ, Recovery cũ) mới bị xoá và chia lại thành layout mới trong đúng vùng trống của chúng; mọi phân vùng data trên cùng đĩa được giữ nguyên — chúng không bao giờ được phép chọn để xoá, và phân vùng chứa bộ cài/staging được bảo vệ tuyệt đối. Trong WinPE, engine đối chiếu lại từng phân vùng bằng GUID (GPT) hoặc offset+kích thước (MBR), kiểm tra chúng tạo thành một vùng liên tục và đủ lớn trước khi xoá — lệch bất kỳ điểm nào là dừng hẳn (exit 13), không đụng vào đĩa.");
@@ -3349,7 +3350,7 @@ Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài 
 
 7. BA CHẾ ĐỘ PHÂN VÙNG
 - PRESERVE (mặc định): chỉ format phân vùng Windows cũ rồi bung ảnh lên đó; mọi phân vùng khác (dữ liệu, EFI, Recovery hiện có) được giữ nguyên và tái sử dụng.
-- WIPE DISK: xoá toàn bộ đĩa đích và chia lại theo chuẩn Microsoft. UEFI/GPT: EFI 260 MB FAT32 -> MSR 16 MB -> Windows NTFS (phần còn lại) -> Recovery 600 MB NTFS (đặt đúng GUID và thuộc tính phân vùng WinRE, chép Winre.wim vào và đăng ký bằng reagentc). Legacy/MBR: System Reserved 100 MB (đặt active) -> Windows -> Recovery 600 MB (id 27). Chế độ này chỉ chạy khi kỹ thuật viên đã gõ đúng serial của đĩa ở wizard để xác nhận xoá.
+- WIPE DISK: xoá toàn bộ đĩa đích và chia lại theo công thức đã kiểm chứng thực địa (từ v0.7.22). UEFI/GPT: EFI 260 MB FAT32 -> MSR 500 MB -> Recovery 1024 MB NTFS (đặt đúng GUID và thuộc tính phân vùng WinRE; hồ sơ chuẩn chép Winre.wim vào và đăng ký bằng reagentc, hồ sơ CORE để trống như cài tay) -> Windows NTFS (phần còn lại). Legacy/MBR: System Reserved 100 MB (đặt active) -> Windows -> Recovery 1024 MB (id 27). Chế độ này chỉ chạy khi kỹ thuật viên đã gõ đúng serial của đĩa ở wizard để xác nhận xoá.
 - REBUILD (mới ở v0.7.13): chỉ xoá CÁC PHÂN VÙNG HỆ THỐNG ĐÃ CHỌN trên đĩa đích — EFI, MSR, Windows cũ, Recovery cũ — rồi chia lại layout mới (cùng layout như WIPE DISK) trong đúng VÙNG TRỐNG của chúng; mọi phân vùng data trên cùng đĩa được giữ nguyên tuyệt đối. Sinh ra cho máy chỉ có 1 ổ đĩa (Windows cũ và data chung đĩa, đĩa chứa staging cũng chính là đĩa đích). Ở wizard, danh sách phân vùng của đĩa đích hiện dạng ô tick: phân vùng hệ thống tick sẵn (bỏ tick được, trừ phân vùng Windows cũ là bắt buộc), phân vùng data và phân vùng chứa bộ cài không tick được; xác nhận cũng phải gõ đúng serial đĩa như WIPE DISK. stage.json ghi thêm mảng rebuildPartitions: từng phân vùng sẽ xoá kèm loại, kích thước, offset và GUID duy nhất của phân vùng (đĩa GPT). Trong WinPE, engine đối chiếu lại TỪNG phân vùng bằng GUID (GPT) hoặc offset + kích thước (MBR, dung sai 1 MB), kiểm tra phân vùng chứa staging không nằm trong danh sách xoá, kiểm tra các phân vùng cần xoá tạo thành MỘT vùng liên tục và vùng đó đủ lớn cho layout mới (tối thiểu: boot + Recovery + Windows 10 GB) — TẤT CẢ trước khi xoá bất cứ thứ gì; lệch bất kỳ điểm nào là dừng cứng với exit code 13, không đụng vào đĩa. Khi chia lại, các phân vùng mới được ghim đúng offset vào vùng vừa trống nên không bao giờ lấn sang phân vùng data kề bên; sau khi chia, engine xác minh lại cả phân vùng mới lẫn các phân vùng được giữ (còn nguyên vị trí và kích thước).
 - TỰ GÁN KÝ TỰ Ổ CHO PHÂN VÙNG BOOT SAU KHI CHIA (từ v0.7.16 — áp dụng cho cả WIPE DISK và REBUILD): sau khi diskpart chia xong, engine đối chiếu lại layout thật trên đĩa đích. Phân vùng boot (EFI/System Reserved) có thể có mặt nhưng KHÔNG có ký tự ổ dùng được — thực địa đã gặp: diskpart báo "đã gán ký tự thành công" mà phân vùng EFI vẫn không có ký tự, và các bản trước dừng cứng ngay tại đó dù đĩa đã bị xoá trắng (máy mất cả Windows cũ lẫn đường vào Windows mới). Từ v0.7.16 engine TỰ CHỮA: tự gán ký tự cho phân vùng boot (ưu tiên S như script chia đĩa đã định; gán bằng script diskpart phụ, dự phòng bằng gán điểm mount trực tiếp lên volume), rồi kiểm chứng bằng cách TRUY CẬP THẬT đường dẫn gốc của ký tự đó — truy cập được mới tính là có ký tự, không tin riêng phần liệt kê. Chỉ khi phân vùng boot vắng mặt hẳn trong layout mới, hoặc tự gán + truy cập thử đều thất bại sau khi thử lại, engine mới dừng. Ký tự đã chốt được các bước sau (bung ảnh, bcdboot, chép WinRE) dùng tiếp như bình thường.
 
@@ -3375,13 +3376,15 @@ Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài 
 - Module Cài Đặt Win = WinPE bỏ phụ thuộc PowerShell khi chọn nguồn: file ISO được mount bằng VirtDisk API gốc (cùng cơ chế lớp 3 của mục 1, nay đặt trong thư viện dùng chung) rồi đọc thẳng sources\install.* — các WinPE phổ biến không có cmdlet Storage vẫn mount được ISO; gỡ mount đối xứng bằng DetachVirtualDisk khi đổi nguồn hoặc đóng module. Nếu chính VirtDisk cũng không attach được, thông báo hướng dẫn mount sẵn ISO bằng công cụ của WinPE rồi chọn/gõ thẳng file sources\install.wim (hoặc .esd/.swm) — đúng đường đã cứu ca thực địa. Nút "Chọn file..." nay mở TRÌNH DUYỆT FILE TÍCH HỢP của module (liệt kê mọi ổ đĩa, duyệt thư mục, lọc *.iso/*.wim/*.esd/*.swm, hiện tên file đầy đủ, nhấp đúp để chọn) thay cho hộp thoại file của Windows — hộp thoại đó không mở được trong các WinPE này; ô gõ đường dẫn trực tiếp vẫn dùng được như trước. Và sau bất kỳ lần nạp nguồn nào — thành công hay lỗi — các nút bấm đều được mở khoá lại: luồng nền được bọc bắt lỗi toàn diện và hộp thoại chỉ hiện sau khi trạng thái nút đã cập nhật, nút chỉ khoá trong lúc thao tác thật sự đang chạy (bản cũ từng kẹt nút "Nạp nguồn" sau một lần nạp lỗi, phải mở lại module).
 - autounattend.xml (cả wizard lẫn module WinPE sinh) nay mang hai lệnh chạy ở lần đăng nhập đầu cho tài khoản admin: net user <tên> /logonpasswordchg:no và đặt mật khẩu không hết hạn (PasswordNeverExpires qua PowerShell Set-LocalUser). Tài khoản Setup tạo từ unattend mang cờ "phải đổi mật khẩu ở lần đăng nhập đầu tiên" (pwdLastSet = 0) — thực địa bản v0.7.18 cho thấy AutoLogon bị chặn ở màn hình đổi mật khẩu (User name / Old password / New password) thay vì vào thẳng desktop. Hai lệnh này dọn cờ đó ngay ở lần đăng nhập đầu, áp dụng cả khi mật khẩu để trống lẫn khi có đặt, để ca cài hoàn toàn không cần người trông vẫn về được desktop.
 
-13. HỒ SƠ CORE CHO ẢNH RÚT GỌN — TINY11 CORE (từ v0.7.21)
+14. HỒ SƠ CORE CHO ẢNH RÚT GỌN — TINY11 CORE (v0.7.21, ĐỊNH NGHĨA LẠI Ở v0.7.22)
 
-Ảnh Windows rút gọn kiểu Tiny11 Core (chế từ ISO gốc Microsoft rồi cắt giảm component) có thể boot vòng lỗi CRITICAL_PROCESS_DIED (0xEF) ở lần khởi động đầu khi cài bằng hồ sơ chuẩn, trong khi cài tay tối thiểu (chia phân vùng, bung ảnh, bcdboot — kiểu WinNTSetup) thì lên bình thường. Từ v0.7.21, wizard có nút bật/tắt "Ảnh rút gọn (Tiny11 Core)" ở tab Tuỳ chọn cài đặt, module Cài Đặt Win=WinPE có ô tick tương ứng; bật lên thì ca cài đi theo hồ sơ CORE:
-- autounattend.xml KHÔNG có khối <FirstLogonCommands>: không lệnh dọn cờ mật khẩu ở phiên đăng nhập đầu, không lệnh hậu cài. Phần còn lại của unattend (locale, tên máy, OOBE rút gọn, tài khoản LocalAccount, AutoLogon) giữ nguyên như hồ sơ chuẩn. stage.json ghi "imageProfile": "core" (hồ sơ chuẩn ghi "standard"; stage.json cũ không có trường này được hiểu là standard).
-- Sau khi bung ảnh, engine (đường wizard) và module WinPE (đường cài thẳng trong WinPE) BỎ QUA bước chuẩn bị agent hậu cài, thay vào đó ghi Windows\Setup\Scripts\SetupComplete.cmd tối thiểu chứa đúng một lệnh: net user <tài khoản admin> /logonpasswordchg:no. Windows chạy SetupComplete.cmd bằng quyền SYSTEM ở cuối pha setup, TRƯỚC lần đăng nhập đầu tiên, nên cờ "phải đổi mật khẩu ở lần đăng nhập đầu" của tài khoản admin vẫn được dọn kịp và AutoLogon vào thẳng desktop, mà không cần lệnh nào chạy trong phiên đăng nhập đầu. Nếu ảnh đã có sẵn SetupComplete.cmd (từ bộ tuỳ biến), tool nối thêm dòng lệnh vào cuối file chứ không ghi đè.
-- Đánh đổi: hồ sơ CORE không đặt PasswordNeverExpires cho tài khoản admin như hồ sơ chuẩn (việc đó cần PowerShell ở phiên đăng nhập đầu); cần thì đặt sau ngay trong Windows mới. Hồ sơ CORE cũng không tự cài ứng dụng sau đăng nhập.
-- Ngoài phần cấu hình sau bung ảnh, mọi cơ chế an toàn về đĩa, phân vùng và boot (mục 5, 6, 7, 12) giữ nguyên ở cả hai hồ sơ."#;
+Ảnh Windows rút gọn kiểu Tiny11 Core (chế từ ISO gốc Microsoft rồi cắt giảm component) boot vòng lỗi CRITICAL_PROCESS_DIED (0xEF) ở lần khởi động đầu khi cài bằng bộ công cụ này — ca thực địa 2026-11-20 cho thấy kể cả hồ sơ CORE của v0.7.21 (unattend rút gọn, bỏ FirstLogonCommands, dọn cờ mật khẩu bằng SetupComplete.cmd) vẫn lỗi — trong khi cài tay trong WinPE (chia phân vùng bằng MiniTool, bung ảnh bằng WinNTSetup, không unattend, không nạp thêm driver, không chép WinRE) thì lên bình thường. Từ v0.7.22, hồ sơ CORE là bản sao đúng công thức cài tay đã kiểm chứng đó. Wizard có nút bật/tắt "Ảnh rút gọn (Tiny11 Core)" ở tab Tuỳ chọn cài đặt, module Cài Đặt Win=WinPE có ô tick độc lập tương ứng; bật lên thì ca cài đi theo hồ sơ CORE:
+- Wizard KHÔNG sinh autounattend.xml; engine và module KHÔNG chép bất kỳ unattend nào vào Windows\Panther — bản Windows mới giữ nguyên luồng OOBE gốc của ảnh (tự tạo tài khoản ở màn hình thiết lập đầu như khi cài tay). stage.json ghi "imageProfile": "core" (hồ sơ chuẩn ghi "standard"; stage.json cũ không có trường này được hiểu là standard). Ở module WinPE, ô tick CORE độc lập với ô "Tự thiết lập Windows": đã tick CORE thì unattend (nếu có tick) cũng bị bỏ qua.
+- KHÔNG inject driver offline: cả driver lưu trữ trong staging lẫn bản sao lưu driver của Windows cũ (QSU-DriverBackup) đều không được nạp — ảnh giữ đúng bộ driver có sẵn trong ảnh.
+- KHÔNG chép WinRE vào phân vùng Recovery và không đăng ký reagentc: phân vùng Recovery vẫn được tạo theo layout mới (mục 5) nhưng để trống, như layout cài tay.
+- KHÔNG agent hậu cài, KHÔNG SetupComplete.cmd; PostInstall.exe nếu có trong staging cũng bị bỏ qua.
+- Phần engine/module còn làm: chia phân vùng theo layout mới (khi chọn xoá/chia lại đĩa), bung ảnh, chép thư mục custom nếu có (nguyên trạng, không bao giờ chạy), chốt boot bằng bcdboot và kiểm chứng file boot thật — cùng mọi cơ chế an toàn về đĩa và boot ở các mục 5, 6, 7, 12.
+- Đánh đổi: không có tài khoản admin tạo sẵn và AutoLogon — người cài đi qua OOBE gốc của ảnh và tự tạo tài khoản như khi cài tay; không tự cài ứng dụng sau đăng nhập. Cần tự động hoá đầy đủ (tài khoản sẵn, tự cài ứng dụng) thì dùng hồ sơ chuẩn với ảnh Windows đầy đủ."#;
 
 // ---------------------------------------------------------------------------
 // Trạng thái giao diện (luồng UI) + dựng cửa sổ
@@ -6300,14 +6303,14 @@ fn on_start_inner(app: &Rc<App>) {
                         return;
                     }
                     // Vùng trống sau xoá phải đủ cho layout mới:
-                    // boot (+MSR) + Recovery 600MB + Windows ≥ 10GB —
+                    // boot (+MSR) + Recovery 1024MB + Windows ≥ 10GB —
                     // cùng ngưỡng engine sẽ kiểm lại trong WinPE.
-                    let min_region = (if pf.uefi { 876 } else { 700 }) * 1_048_576 + 10 * GB;
+                    let min_region = (if pf.uefi { 1784 } else { 1124 }) * 1_048_576 + 10 * GB;
                     if region < min_region {
                         error_box(
                             "Cài Đặt Windows",
                             &format!(
-                                "Tổng dung lượng các phân vùng hệ thống đã chọn ({}) nhỏ hơn mức tối thiểu {} cho layout mới (boot + Recovery 600MB + Windows tối thiểu 10GB). Hãy tick thêm phân vùng hệ thống (ví dụ Recovery cũ) hoặc chọn chế độ khác.",
+                                "Tổng dung lượng các phân vùng hệ thống đã chọn ({}) nhỏ hơn mức tối thiểu {} cho layout mới (boot + Recovery 1024MB + Windows tối thiểu 10GB). Hãy tick thêm phân vùng hệ thống (ví dụ Recovery cũ) hoặc chọn chế độ khác.",
                                 sys::format_gb(region),
                                 sys::format_gb(min_region)
                             ),
@@ -6379,7 +6382,7 @@ fn on_start_inner(app: &Rc<App>) {
     };
     let summary = if plan.part_mode == PartMode::WipeDisk {
         format!(
-            "ISO: {}\nPhiên bản: {} (index {})\nChế độ: CÀI MỚI HOÀN TOÀN — XOÁ TOÀN BỘ Ổ ĐĨA ĐÍCH, CHIA LẠI TỪ ĐẦU\n\nĐĩa đích: {}\nCác phân vùng trên đĩa đích:\n{}\n\nTOÀN BỘ DỮ LIỆU TRÊN CÁC PHÂN VÙNG NÀY SẼ BỊ XOÁ VĨNH VIỄN.\nĐĩa sẽ được chia lại: phân vùng boot (EFI/System Reserved) + MSR (nếu UEFI) + Windows + Recovery 600MB.\nỔ Data được bảo vệ: {}:{} (nằm trên đĩa khác, chứa staging + log){}\n\nSau khi máy reboot vào WinPE, quá trình KHÔNG huỷ được.",
+            "ISO: {}\nPhiên bản: {} (index {})\nChế độ: CÀI MỚI HOÀN TOÀN — XOÁ TOÀN BỘ Ổ ĐĨA ĐÍCH, CHIA LẠI TỪ ĐẦU\n\nĐĩa đích: {}\nCác phân vùng trên đĩa đích:\n{}\n\nTOÀN BỘ DỮ LIỆU TRÊN CÁC PHÂN VÙNG NÀY SẼ BỊ XOÁ VĨNH VIỄN.\nĐĩa sẽ được chia lại: phân vùng boot (EFI/System Reserved) + MSR (nếu UEFI) + Recovery 1024MB + Windows (phần còn lại).\nỔ Data được bảo vệ: {}:{} (nằm trên đĩa khác, chứa staging + log){}\n\nSau khi máy reboot vào WinPE, quá trình KHÔNG huỷ được.",
             plan.iso.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             plan.edition.name,
             plan.edition.index,
@@ -6397,14 +6400,14 @@ fn on_start_inner(app: &Rc<App>) {
         )
     } else if plan.part_mode == PartMode::Rebuild {
         format!(
-            "ISO: {}\nPhiên bản: {} (index {})\nChế độ: CÀI MỚI — CHỈ XOÁ PHÂN VÙNG HỆ THỐNG TRÊN ĐĨA ĐÍCH, GIỮ NGUYÊN PHÂN VÙNG DATA\n\nĐĩa đích: {}\nCác phân vùng hệ thống sẽ bị XOÁ:\n{}\n\nDỮ LIỆU TRÊN CÁC PHÂN VÙNG NÀY SẼ BỊ XOÁ VĨNH VIỄN.\nCác phân vùng trên đĩa đích được GIỮ NGUYÊN:\n{}\n\nVùng trống sau khi xoá sẽ được chia lại: phân vùng boot (EFI 260MB/System Reserved 100MB){} + Windows + Recovery 600MB.\nỔ Data: {}:{} (chứa staging + log — phân vùng của nó KHÔNG nằm trong danh sách xoá){}\n\nSau khi máy reboot vào WinPE, quá trình KHÔNG huỷ được.",
+            "ISO: {}\nPhiên bản: {} (index {})\nChế độ: CÀI MỚI — CHỈ XOÁ PHÂN VÙNG HỆ THỐNG TRÊN ĐĨA ĐÍCH, GIỮ NGUYÊN PHÂN VÙNG DATA\n\nĐĩa đích: {}\nCác phân vùng hệ thống sẽ bị XOÁ:\n{}\n\nDỮ LIỆU TRÊN CÁC PHÂN VÙNG NÀY SẼ BỊ XOÁ VĨNH VIỄN.\nCác phân vùng trên đĩa đích được GIỮ NGUYÊN:\n{}\n\nVùng trống sau khi xoá sẽ được chia lại: phân vùng boot (EFI 260MB/System Reserved 100MB){} + Recovery 1024MB + Windows (phần còn lại).\nỔ Data: {}:{} (chứa staging + log — phân vùng của nó KHÔNG nằm trong danh sách xoá){}\n\nSau khi máy reboot vào WinPE, quá trình KHÔNG huỷ được.",
             plan.iso.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             plan.edition.name,
             plan.edition.index,
             plan.target_disk_summary,
             plan.target_disk_parts,
             plan.rebuild_kept,
-            if plan.uefi { " + MSR 16MB" } else { "" },
+            if plan.uefi { " + MSR 500MB" } else { "" },
             plan.data_letter,
             {
                 let m = app.model.borrow();

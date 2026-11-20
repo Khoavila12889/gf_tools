@@ -100,12 +100,13 @@ pub struct StageConfig {
     /// Mật khẩu unattended UltraViewer — KHÔNG log
     pub ultraviewer_password: String,
     pub apply_tweaks: bool,
-    /// Hồ sơ ảnh cài đặt (v0.7.21): "standard" (mặc định; stage.json
-    /// cũ không có trường này vẫn hiểu là standard) hoặc "core" —
-    /// ảnh Windows rút gọn kiểu Tiny11 Core: unattend tối thiểu
-    /// không FirstLogonCommands, engine bỏ qua agent hậu cài và
-    /// thay bằng SetupComplete.cmd tối thiểu dọn cờ mật khẩu
-    /// (xem docs/co_che_v0.7.21.md).
+    /// Hồ sơ ảnh cài đặt (v0.7.21; định nghĩa CORE thay đổi ở
+    /// v0.7.22): "standard" (mặc định; stage.json cũ không có
+    /// trường này vẫn hiểu là standard) hoặc "core" — ảnh Windows
+    /// rút gọn kiểu Tiny11 Core: engine cài đúng công thức
+    /// WinNTSetup — không unattend, không inject driver, không
+    /// chép WinRE, không agent hậu cài/SetupComplete
+    /// (xem docs/co_che_v0.7.22.md).
     pub image_profile: String,
     /// Danh sách ứng dụng hậu cài đầy đủ (url/hash/args) — nhúng tại đây
     /// vì trên Windows mới không còn settings.json của wizard

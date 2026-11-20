@@ -294,11 +294,13 @@ nền của hai chế độ wipeDisk và rebuild. Các thành phần chính:
   wipe); GUID loại phân vùng GPT: EFI `C12A7328-F81F-11D2-BA4B-00A0C93EC93B`,
   MSR `E3C9E316-0B5C-4DB8-817D-F92DF00215AE`,
   Recovery `DE94BBA4-06D1-4D40-A16A-BFD50179D6AC`. Bố cục wipe:
-  GPT = EFI 260 MB + MSR 16 MB + Windows (phần còn lại trừ 876 MB và
-  4 MB cuối) + Recovery 600 MB, yêu cầu phân vùng Windows ≥ 20 GB;
-  MBR = System Reserved 100 MB + Windows + Recovery 600 MB. Vùng
-  rebuild tối thiểu = (876 MB với GPT | 700 MB với MBR) + Windows
-  ≥ 10 GB.
+  GPT = EFI 260 MB + MSR 500 MB + Recovery 1024 MB + Windows (phần
+  còn lại trừ 1784 MB và 4 MB cuối), yêu cầu phân vùng Windows
+  ≥ 20 GB; MBR = System Reserved 100 MB + Windows + Recovery
+  1024 MB. Vùng rebuild tối thiểu = (1784 MB với GPT | 1124 MB
+  với MBR) + Windows ≥ 10 GB. (Layout đổi ở v0.7.22 theo công
+  thức chia tay đã kiểm chứng thực địa; trước đó GPT dùng MSR
+  16 MB và Recovery 600 MB đặt sau phân vùng Windows.)
 - **Liệt kê** — `enumerate_disks() -> DiskEnumeration { disks, diag }`:
   một đĩa được coi là tồn tại khi **mở được handle** `\\.\PhysicalDriveN`
   (quét N từ 0 đến 16); kích thước lấy từ phân vùng nếu IOCTL độ dài
@@ -1199,23 +1201,25 @@ Wizard sinh `autounattend.xml` với hai pass `specialize` và
 Module `CaiDatWinWinPE` có bản sao `build_unattend()` độc lập với
 cùng các quy tắc trên (kể cả mật khẩu tuỳ chọn).
 
-**Hồ sơ CORE cho ảnh rút gọn (từ v0.7.21, branch
-`tiny11-core-profile`)**: wizard (nút bật/tắt "Ảnh rút gọn
-(Tiny11 Core)" ở tab Tuỳ chọn) và module WinPE (ô tick tương ứng)
-có tuỳ chọn hồ sơ triển khai tối thiểu cho ảnh rút gọn kiểu
-Tiny11 Core — ảnh loại này boot vòng lỗi 0xEF khi cài bằng hồ sơ
-chuẩn nhưng lên bình thường khi cài tay tối thiểu kiểu
-WinNTSetup. Khi bật: unattend sinh ra **không có khối
-`FirstLogonCommands`** (mọi phần còn lại giữ nguyên);
-`stage.json` ghi thêm `imageProfile: "core"` (thiếu trường hiểu
-là `"standard"`); sau khi bung ảnh, engine/module bỏ qua bước
-chuẩn bị hậu cài và ghi `Windows\Setup\Scripts\SetupComplete.cmd`
-chứa đúng một lệnh `net user <admin> /logonpasswordchg:no` —
-Windows chạy file này bằng quyền SYSTEM ở cuối pha setup, trước
-lần đăng nhập đầu, thay cho các lệnh dọn cờ ở
-`FirstLogonCommands` của hồ sơ chuẩn; ảnh đã có sẵn
-SetupComplete.cmd thì nối thêm dòng, không ghi đè. Cơ chế đầy
-đủ: `docs/co_che_v0.7.21.md` mục 13.
+**Hồ sơ CORE cho ảnh rút gọn (từ v0.7.21, định nghĩa lại ở
+v0.7.22, branch `tiny11-core-profile`)**: wizard (nút bật/tắt
+"Ảnh rút gọn (Tiny11 Core)" ở tab Tuỳ chọn) và module WinPE (ô
+tick độc lập) có tuỳ chọn hồ sơ triển khai cho ảnh rút gọn kiểu
+Tiny11 Core. Bản v0.7.21 (unattend bỏ khối `FirstLogonCommands`
++ ghi `SetupComplete.cmd` dọn cờ mật khẩu) vẫn boot vòng 0xEF ở
+ca thực địa 2026-11-20, trong khi cài tay bằng WinNTSetup
+(không unattend, không nạp driver, không chép WinRE) lên bình
+thường — nên từ v0.7.22 hồ sơ CORE là bản sao đúng công thức
+cài tay đó: wizard **không sinh `autounattend.xml`**;
+engine/module **không chép unattend vào Panther** (bản Windows
+mới đi OOBE gốc của ảnh), **không inject driver** (cả staging
+lẫn `QSU-DriverBackup`), **không chép WinRE/reagentc**, **không
+agent hậu cài, không SetupComplete, bỏ qua cả PostInstall.exe
+nếu có trong staging**. `stage.json` vẫn ghi
+`imageProfile: "core"` (thiếu trường hiểu là `"standard"`).
+Đánh đổi: không có tài khoản tạo sẵn/AutoLogon, không tự cài
+ứng dụng sau đăng nhập. Cơ chế đầy đủ:
+`docs/co_che_v0.7.22.md` mục 14.
 
 ### 4.10. Driver: sao lưu và inject — ranh giới thật
 
@@ -1634,6 +1638,7 @@ Mỗi phiên bản một dòng, theo `BUILD_NOTES.md` và các gói phát hành
 | v0.7.19 | 2026-11-18 | **Chốt boot cùng đĩa cho đường preserve + module WinPE tự mount ISO / trình duyệt file tích hợp / chống kẹt nút + dọn cờ đổi mật khẩu**: sửa 4 lỗi từ buổi test thực địa cùng ngày trên DESKTOP-704R89L (WinPE USB BHT, cài ISO gốc theo phân vùng). (1) `disk::finalize_boot()` mới trong qsu_common, nối vào CaiDatWinWinPE (theo phân vùng) và engine preserve: tìm phân vùng boot TRÊN CÙNG ĐĨA với phân vùng Windows theo loại phân vùng (GPT: EFI System; MBR: System Reserved active), tự gán ký tự bằng `ensure_boot_letter`, bcdboot + kiểm chứng file boot thật, thử lại 1 lần, lỗi kèm output của bcdboot; xoá cả hai bản sao `find_efi_letter()` (đóng rủi ro R1 — ca thực địa: apply 100% nhưng bcdboot thất bại vì EFI của SSD không có ký tự ổ, phải chạy bcdboot tay). (2) Module WinPE mount ISO bằng VirtDisk API qua module mới `qsu_common::iso` — bỏ hẳn ngõ cụt "không có PowerShell/cmdlet Storage"; lỗi attach có hướng dẫn dự phòng mount sẵn + chọn thẳng `sources\install.*`. (3) Trình duyệt file TÍCH HỢP thay `nwg::FileDialog` (hộp thoại Windows không mở được trong WinPE BHT): liệt kê ổ đĩa, duyệt thư mục, lọc *.iso/*.wim/*.esd/*.swm, tên đầy đủ, hai chế độ file/thư mục; ô gõ đường dẫn giữ nguyên. Chống kẹt nút: luồng nền nạp nguồn/liệt kê bọc `catch_unwind` (busy luôn được nhả), hộp thoại trong `refresh()` trì hoãn sau `set_busy_ui()`. (4) `build_unattend()` ở cả wizard và module WinPE thêm hai FirstLogonCommands (`net user <Admin> /logonpasswordchg:no` + `Set-LocalUser -PasswordNeverExpires`) dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu" (pwdLastSet=0) — ca thực địa AutoLogon bị chặn ở màn hình đổi mật khẩu; áp dụng cả khi mật khẩu trống, kèm dòng `[Cơ chế]` ở cả hai nơi sinh. Wizard thêm mục 12 vào tab Tài liệu. |
 | v0.7.20 | 2026-11-18 | **Chuẩn hoá giao diện toàn bộ (chỉ lớp trình bày — hành vi không đổi)**: thêm design system `qsu_common::ui` (sáu font chuẩn Segoe UI/Consolas dạng getter thay 10 bản sao chép tay, token lề 16/khe 8/header (16,8)+(16,40)/nút cao 32/ô nhập 28, `add_header`, `make_primary` cho một nút chính mỗi cửa sổ, hộp thoại chuẩn) và icon cửa sổ chung `qsu.ico` nhúng trong qsu_common cho mọi cửa sổ. Launcher: header về toạ độ chuẩn, lưới nút dùng một công thức cho cả dựng/lọc, icon đủ **32/32** nút (9 glyph gốc giữ toạ độ + 23 glyph mới cùng ngôn ngữ nét 2px mực thép xanh RGB(40,93,145), sinh bởi `packaging/draw-icons.py`). Các module gom font/header/icon; ô log kỹ thuật về Consolas; hàng nút hành động đồng đều 32; cột nội dung của Tắt BitLocker/Sao Lưu Wifi dịch lề 14→16. Ngoại lệ có ghi trong chuẩn: header wizard giữ (16,6)/(16,36) vì khung tab ở y=60; màn tiến trình WinPE toàn màn hình giữ nguyên thiết kế v0.7.18; engine WinPEInstall không sửa mã nguồn (build lại vì thư viện chung mở rộng). Chuẩn + rà soát từng cửa sổ: `docs/chuan_giao_dien.md`. |
 | v0.7.21 | 2026-11-20 | **Hồ sơ CORE cho ảnh rút gọn (Tiny11 Core)** — trên branch `tiny11-core-profile` (main giữ v0.7.20 làm đường lui): tuỳ chọn triển khai tối thiểu cho ảnh rút gọn vốn boot vòng CRITICAL_PROCESS_DIED (0xEF) khi cài bằng hồ sơ chuẩn nhưng lên ngon khi cài tay kiểu WinNTSetup. Wizard thêm nút "Ảnh rút gọn (Tiny11 Core)" ở tab Tuỳ chọn; module WinPE thêm ô tick tương ứng. `build_unattend()` (cả hai bản sao, đồng bộ) thêm tham số hồ sơ: chuẩn = khối `FirstLogonCommands` giữ nguyên từng byte; CORE = bỏ hẳn khối đó. `stage.json` thêm trường `imageProfile` (core/standard, mặc định standard, tương thích ngược). Engine WinPEInstall + module WinPE: hồ sơ CORE bỏ qua bước chuẩn bị agent hậu cài, ghi `Windows\Setup\Scripts\SetupComplete.cmd` tối thiểu (`net user <admin> /logonpasswordchg:no`; nối thêm nếu ảnh đã có sẵn file) để dọn cờ đổi mật khẩu ở cuối pha setup, trước lần đăng nhập đầu. Tài liệu: `docs/co_che_v0.7.21.md` mục 13; tab Tài liệu của wizard đồng bộ từng chữ. |
+| v0.7.22 | 2026-11-20 | **Định nghĩa lại hồ sơ CORE + layout chia đĩa theo công thức cài tay** (branch `tiny11-core-profile`): ca thực địa v0.7.21 vẫn 0xEF, nên hồ sơ CORE thành bản sao đúng công thức WinNTSetup đã kiểm chứng — wizard không sinh `autounattend.xml`, engine/module không chép unattend (OOBE gốc của ảnh), không inject driver (staging + `QSU-DriverBackup`), không chép WinRE/reagentc, không agent/SetupComplete/PostInstall; ô tick CORE của module độc lập với ô unattend. Layout wipe/rebuild GPT đổi: EFI 260MB + MSR 500MB + **Recovery 1024MB đặt trước** + Windows (MBR: Recovery 600→1024MB) — Recovery 600MB cũ không đủ chỗ chép Winre.wim (log 2026-11-19, os error 112). Tài liệu: `docs/co_che_v0.7.22.md` mục 14; tab Tài liệu của wizard đồng bộ từng chữ. |
 
 ---
 
