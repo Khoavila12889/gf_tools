@@ -1607,6 +1607,53 @@ fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// Ghi trạng thái nút hồ sơ CORE vào settings.json cạnh wizard
+/// (khoá `defaultCoreProfile`) để lần mở sau wizard nhớ lựa
+/// chọn (v0.7.24). Sửa file dạng văn bản tại đúng vị trí khoá —
+/// giữ nguyên mọi khoá và định dạng còn lại; chưa có khoá thì
+/// chèn ngay sau dấu `{` đầu tiên; chưa có file thì tạo file
+/// tối thiểu. Lỗi ghi thì bỏ qua: trạng thái vẫn áp dụng cho
+/// phiên hiện tại, chỉ không được nhớ sang lần mở sau.
+fn persist_core_default(exe_dir: &Path, on: bool) {
+    let path = exe_dir.join("settings.json");
+    let val = if on { "true" } else { "false" };
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let new_text = match text.find("\"defaultCoreProfile\"") {
+        Some(kp) => {
+            let after = &text[kp..];
+            let tok = match (after.find("true"), after.find("false")) {
+                (Some(t), Some(f)) => {
+                    if t < f {
+                        Some(("true", t))
+                    } else {
+                        Some(("false", f))
+                    }
+                }
+                (Some(t), None) => Some(("true", t)),
+                (None, Some(f)) => Some(("false", f)),
+                (None, None) => None,
+            };
+            match tok {
+                Some((t, off)) => {
+                    let start = kp + off;
+                    format!("{}{}{}", &text[..start], val, &text[start + t.len()..])
+                }
+                None => text.clone(),
+            }
+        }
+        None => match text.find('{') {
+            Some(bp) => format!(
+                "{}{{ \"defaultCoreProfile\": {},{}",
+                &text[..bp],
+                val,
+                &text[bp + 1..]
+            ),
+            None => format!("{{\n  \"defaultCoreProfile\": {}\n}}\n", val),
+        },
+    };
+    let _ = std::fs::write(&path, new_text);
+}
+
 // Hồ sơ CORE (tham số `core_profile`): cho ảnh Windows rút gọn
 // kiểu Tiny11 Core — các ảnh này thiếu nhiều component mà một
 // unattend đầy đủ chạm tới, và thực địa cho thấy chúng boot
@@ -2895,6 +2942,16 @@ fn exec_clean(
         fail(format!("Không chuẩn bị được cấu hình thông báo Telegram: {}", e));
         return;
     }
+    // [Cơ chế] (v0.7.24): dòng đầu ca staging ghi rõ hồ sơ triển
+    // khai — hai ca test v0.7.21/v0.7.22 chạy nhầm hồ sơ STANDARD
+    // vì nút Core chưa BẬT (mặc định TẮT, không lưu trạng thái);
+    // từ v0.7.24 nút Core nhớ trạng thái qua settings.json và log
+    // phải cho thấy hồ sơ ngay từ đầu ca.
+    if plan.core_profile {
+        log.line("[Cơ chế] HỒ SƠ TRIỂN KHAI: CORE — ảnh rút gọn Tiny11 Core (stage.json imageProfile=core; unattend chỉ pha OOBE, không inject driver, không chép WinRE, không agent hậu cài).");
+    } else {
+        log.line("[Cơ chế] HỒ SƠ TRIỂN KHAI: STANDARD — hồ sơ đầy đủ (unattend đầy đủ + tự cài ứng dụng sau đăng nhập). Nếu đang cài ảnh rút gọn Tiny11 Core mà thấy dòng này là CHƯA BẬT nút 'Ảnh rút gọn (Tiny11 Core)' ở tab Tuỳ chọn cài đặt.");
+    }
     // [Cơ chế] (v0.7.12 — dòng thuyết minh công nghệ trong log,
     // thuần chuỗi log, không đổi hành vi): staging trên ổ Data.
     log.line("[Cơ chế] Staging trên ổ Data: toàn bộ ca cài được chuẩn bị vào thư mục QSU-Stage trên ổ Data (bộ nguồn, WinPE, driver, stage.json); ổ Data đã được đánh dấu bằng file .qsu_data_drive và stage.json ghi lại toàn bộ kế hoạch — vào WinPE, engine tìm lại ổ Data bằng marker + đối chiếu serial trong stage.json, không dựa vào ký tự ổ (ký tự ổ trong WinPE khác hẳn trong Windows).");
@@ -3411,7 +3468,14 @@ Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài 
 - Wizard sinh autounattend.xml rút gọn cho hồ sơ CORE và ghi vào staging; engine chép vào Windows\Panther như hồ sơ chuẩn. Module Cài Đặt Win=WinPE sinh cùng một nội dung (ô tick CORE độc lập — tick CORE là tự sinh unattend này từ các ô tài khoản, không cần tick thêm "Tự thiết lập Windows").
 - Nội dung unattend CORE: CHỈ pha oobeSystem — locale, các cờ bỏ qua màn hình thiết lập (EULA, tài khoản online, wifi), LocalAccount thuộc nhóm Administrators (mật khẩu tuỳ chọn như hồ sơ chuẩn) và AutoLogon 1 lần. KHÔNG có pha specialize, KHÔNG có FirstLogonCommands.
 - Đánh đổi: tên máy và múi giờ không đặt được (hai thiết lập này chỉ nằm ở pha specialize — tên máy để Windows tự sinh dạng DESKTOP-xxxxxxx, múi giờ theo mặc định của ảnh; đổi sau trong Windows nếu cần); không có lệnh dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu" — nếu ảnh đặt cờ đó cho tài khoản tạo từ unattend, lần đăng nhập đầu có thể dừng ở màn hình đổi mật khẩu (để trống cả ba ô rồi Enter) như ca thực địa v0.7.18; không tự cài ứng dụng sau đăng nhập.
-- stage.json ghi "imageProfile": "core" (hồ sơ chuẩn ghi "standard"; stage.json cũ không có trường này được hiểu là standard). Staging sinh bởi v0.7.22 (không có autounattend.xml) vẫn tương thích: engine khi đó cài thuần như WinNTSetup và vào OOBE gốc của ảnh."#;
+- stage.json ghi "imageProfile": "core" (hồ sơ chuẩn ghi "standard"; stage.json cũ không có trường này được hiểu là standard). Staging sinh bởi v0.7.22 (không có autounattend.xml) vẫn tương thích: engine khi đó cài thuần như WinNTSetup và vào OOBE gốc của ảnh.
+
+16. HỒ SƠ TRIỂN KHAI ĐƯỢC LƯU TRẠNG THÁI VÀ GHI RÕ TRONG LOG (v0.7.24)
+
+Hai ca test thực địa v0.7.21 và v0.7.22 chạy nhầm hồ sơ STANDARD trong khi tưởng đang test hồ sơ CORE: nút "Ảnh rút gọn (Tiny11 Core)" ở wizard mặc định TẮT, nằm ở tab Tuỳ chọn và không lưu trạng thái — ca chạy vì thế nhận đủ unattend đầy đủ, agent hậu cài và bước inject driver sao lưu, rồi vẫn lỗi 0xEF như hồ sơ chuẩn (đọc rõ trong log engine của ca: có chép autounattend, có chuẩn bị tự cài ứng dụng, có thử inject driver từ bản sao lưu). Từ v0.7.24:
+- Nút Core ở wizard khởi tạo từ khoá defaultCoreProfile trong settings.json cạnh wizard, và TỰ GHI LẠI vào settings.json mỗi lần bật/tắt — bật một lần là các lần mở wizard sau vẫn hiện BẬT.
+- Log của wizard (ngay đầu ca staging), của engine (theo stage.json) và của module WinPE đều có dòng "[Cơ chế] HỒ SƠ TRIỂN KHAI: CORE ..." hoặc "STANDARD ..." — ca chạy thuộc hồ sơ nào, mở log là biết ngay, không phải suy đoán từ ảnh chụp màn hình.
+- Khi cài ảnh rút gọn, luôn kiểm tra nút Core đang BẬT (hoặc dòng HỒ SƠ TRIỂN KHAI: CORE trong log staging) trước khi để máy reboot vào WinPE; thấy STANDARD nghĩa là ca chạy chưa bật Core."#;
 
 // ---------------------------------------------------------------------------
 // Trạng thái giao diện (luồng UI) + dựng cửa sổ
@@ -4133,6 +4197,9 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
     let (settings, settings_err) = Settings::load(&exe_dir);
+    // v0.7.24: nút Core khởi tạo từ settings (defaultCoreProfile)
+    // và tự lưu lại mỗi lần bật/tắt — xem persist_core_default.
+    let core_default = settings.default_core_profile;
     let shared: SharedRef = Arc::new(Mutex::new(Shared::default()));
     if let Some(e) = &settings_err {
         shared
@@ -4176,7 +4243,7 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
             rebuild_checks_disk: None,
             parts_disk: None,
             apply_tweaks: false,
-            core_profile: false,
+            core_profile: core_default,
             busy_ed: false,
             running: false,
             last_clean: false,
@@ -4188,6 +4255,9 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
         }),
         shared,
     });
+    if core_default {
+        app.btn_core.set_text("Ảnh rút gọn (Tiny11 Core): BẬT");
+    }
     finish_build(window, app)
 }
 
@@ -5845,6 +5915,10 @@ fn handle_event(app: &Rc<App>, evt: nwg::Event, handle: nwg::ControlHandle) {
                 let on = {
                     let mut m = app.model.borrow_mut();
                     m.core_profile = !m.core_profile;
+                    // v0.7.24: lưu trạng thái nút vào settings.json
+                    // để các lần mở wizard sau vẫn giữ — ca test
+                    // không còn phụ thuộc vào việc nhớ bật lại nút.
+                    persist_core_default(&m.exe_dir, m.core_profile);
                     m.core_profile
                 };
                 app.btn_core

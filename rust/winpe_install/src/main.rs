@@ -170,7 +170,7 @@ fn main() {
     // diện, không ảnh hưởng luồng cài đặt hay dòng console.
     let ui = ProgressUi::start();
     ui.set_phase("Đang khởi động engine cài đặt", 0);
-    progress::mirror_line("=== QSU WinPEInstall v0.7.23 — engine cài đặt trong WinPE ===");
+    progress::mirror_line("=== QSU WinPEInstall v0.7.24 — engine cài đặt trong WinPE ===");
     let code = run(&ui);
     if code == 0 {
         std::process::exit(0);
@@ -551,6 +551,11 @@ fn run(ui: &ProgressUi) -> i32 {
     // ảnh đã cắt gọt làm một service/driver boot-start chết ở lần
     // boot đầu → CRITICAL_PROCESS_DIED (0xEF).
     let core_profile = cfg.image_profile.eq_ignore_ascii_case("core");
+    // [Cơ chế] (v0.7.24): ghi rõ hồ sơ engine đang thực thi theo
+    // stage.json — log phải tự chứng minh ca chạy đi hồ sơ nào
+    // (hai ca test v0.7.21/v0.7.22 chạy nhầm STANDARD vì nút
+    // Core ở wizard chưa BẬT).
+    log.line(&format!("[Cơ chế] HỒ SƠ TRIỂN KHAI: stage.json imageProfile='{}' → {}.", cfg.image_profile, if core_profile { "CORE (ảnh rút gọn)" } else { "STANDARD (đầy đủ)" }));
     if core_profile {
         log.line("[Cơ chế] Hồ sơ CORE (v0.7.22): BỎ QUA inject driver offline (cả driver staging lẫn driver đã sao lưu) — giữ đúng bộ driver trong ảnh như đường cài WinNTSetup.");
     }

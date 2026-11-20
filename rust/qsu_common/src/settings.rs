@@ -110,6 +110,12 @@ pub struct Settings {
     pub winpe_wim_path: String,
     pub storage_drivers_path: String,
     pub default_apply_tweaks: bool,
+    /// Mặc định hồ sơ CORE cho ảnh rút gọn Tiny11 Core (v0.7.24):
+    /// wizard khởi tạo nút "Ảnh rút gọn (Tiny11 Core)" từ khoá này
+    /// và TỰ GHI LẠI mỗi khi kỹ thuật viên bật/tắt nút — hai ca
+    /// test v0.7.21/v0.7.22 đã chạy nhầm hồ sơ STANDARD vì nút
+    /// mặc định TẮT và không được bật trong ca chạy.
+    pub default_core_profile: bool,
     /// Mật khẩu unattended của UltraViewer đặt sẵn trong settings (wizard
     /// có ô nhập riêng, giá trị wizard nhập thắng). Không ghi log.
     pub ultraviewer_password: String,
@@ -134,6 +140,7 @@ impl Default for Settings {
             winpe_wim_path: String::new(),
             storage_drivers_path: String::new(),
             default_apply_tweaks: false,
+            default_core_profile: false,
             ultraviewer_password: String::new(),
             post_install_apps: default_apps(),
             loaded_from: None,
@@ -194,6 +201,7 @@ impl Settings {
         st.winpe_wim_path = root.str_or("winpeWimPath", &st.winpe_wim_path);
         st.storage_drivers_path = root.str_or("storageDriversPath", &st.storage_drivers_path);
         st.default_apply_tweaks = root.bool_or("defaultApplyTweaks", st.default_apply_tweaks);
+        st.default_core_profile = root.bool_or("defaultCoreProfile", st.default_core_profile);
         st.ultraviewer_password = root.str_or("ultraviewerPassword", "");
         if let Some(apps) = root.get("postInstallApps").and_then(|a| a.as_arr()) {
             let parsed: Vec<AppEntry> = apps.iter().filter_map(AppEntry::from_json).collect();

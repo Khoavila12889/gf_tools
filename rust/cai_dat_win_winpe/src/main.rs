@@ -1244,6 +1244,14 @@ fn spawn_install(shared: SharedRef, sender: nwg::NoticeSender, plan: InstallPlan
         let target_root = format!("{}:\\", eff_letter);
         let mut warnings: Vec<String> = Vec::new();
 
+        // [Cơ chế] (v0.7.24): ghi rõ hồ sơ triển khai ngay đầu ca —
+        // log phải tự chứng minh ca chạy đi theo hồ sơ nào.
+        if plan.core_profile {
+            log.line("[Cơ chế] HỒ SƠ TRIỂN KHAI: CORE — ảnh rút gọn Tiny11 Core (unattend chỉ pha OOBE, không inject driver, không chép WinRE, không agent hậu cài).");
+        } else {
+            log.line("[Cơ chế] HỒ SƠ TRIỂN KHAI: STANDARD — hồ sơ đầy đủ. Nếu đang cài ảnh rút gọn Tiny11 Core mà thấy dòng này là CHƯA tick ô 'Ảnh rút gọn (Tiny11 Core)'.");
+        }
+
         // --- Bước 1: format (nếu chọn; wipeDisk đã format trong diskpart) ---
         if plan.wipe.is_some() {
             log.line("Chế độ wipeDisk: phân vùng Windows đã được format trong script diskpart — bỏ qua bước format riêng.");
