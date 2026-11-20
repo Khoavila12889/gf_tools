@@ -7,7 +7,8 @@ là một file `.exe` native độc lập, giao diện tiếng Việt. Mục ti�
 không sao chép mã nguồn, tài nguyên đồ họa hay văn bản của bản gốc (ngoại trừ
 các nhãn nút chức năng — vốn thuần túy mô tả tính năng).
 
-**Phiên bản hiện tại: v0.7.18** — xem lịch sử chi tiết trong
+**Phiên bản hiện tại: v0.7.25** — bản chốt trên nhánh `final`
+(nhánh maintain về sau); xem lịch sử chi tiết trong
 [BUILD_NOTES.md](BUILD_NOTES.md) và tài liệu kiểm thử đầy đủ trong
 [docs/README_FULL.md](docs/README_FULL.md).
 
@@ -15,11 +16,15 @@ các nhãn nút chức năng — vốn thuần túy mô tả tính năng).
 
 - **10/32 module đã hoạt động thật** (liệt kê bên dưới); các nút còn lại trả
   lời "Chưa có module" và được xây dựng **từng module một** khi có yêu cầu.
-- Module trọng điểm — **Cài Đặt Win Tự Động** — đã chạy được trên máy thật
-  (máy test chuyên dụng, vòng lặp: chạy thử → gửi log → chẩn đoán → sửa →
-  bản mới). Engine trong WinPE đã boot đúng, xoá/chia phân vùng đúng thông
-  số, bung ảnh với tiến trình hiển thị trực tiếp trên màn hình; chặng cuối
-  (vào Windows mới hoàn chỉnh) đang được kiểm chứng.
+- Module trọng điểm — **Cài Đặt Win Tự Động** — đã chạy trọn vẹn trên máy
+  thật (máy test chuyên dụng, vòng lặp: chạy thử → gửi log → chẩn đoán →
+  sửa → bản mới): wizard staging → engine trong WinPE chia đĩa, bung ảnh,
+  gắn boot → Windows mới tự chạy qua OOBE vào desktop bằng tài khoản đã
+  đặt, không cần người trông. Riêng ảnh Windows rút gọn (Tiny11 Core)
+  từng lỗi CRITICAL_PROCESS_DIED (0xEF) ở lần boot đầu — đã chẩn đoán
+  đến gốc (entry boot do bcdboot dựng theo BCD-Template đã bị sửa trong
+  ảnh) và sửa ở v0.7.25 bằng bước chuẩn hoá entry boot; kiểm chứng thực
+  địa thành công ngày 2026-11-20.
 
 ## Các module đã xây dựng
 
@@ -50,7 +55,8 @@ Luồng hai giai đoạn:
    phân vùng**:
    - **Giữ phân vùng** — chỉ format phân vùng Windows cũ.
    - **Xoá toàn bộ ổ đĩa (wipe)** — chia lại chuẩn GPT: EFI 260 MB + MSR
-     16 MB + Windows (kích thước tuỳ chọn) + Recovery 600 MB. Đĩa chứa dữ
+     500 MB + Recovery 1024 MB (đặt trước phân vùng Windows) + Windows
+     (phần còn lại của đĩa). Đĩa chứa dữ
      liệu staging **không bao giờ** là đĩa đích.
    - **Cài lại phân vùng hệ thống (rebuild)** — chỉ xoá/tạo lại EFI, MSR,
      Windows cũ (và Recovery nếu tick) trên cùng đĩa; phân vùng DATA khoá
@@ -58,7 +64,7 @@ Luồng hai giai đoạn:
    Sau chia phân vùng, engine **tự gán ký tự ổ cho phân vùng boot** nếu
    thiếu (kiểm chứng bằng truy cập đường dẫn thật), rồi bung ảnh bằng DISM,
    cài driver đã sao lưu, sinh `autounattend.xml` (mật khẩu admin **tuỳ
-   chọn** — cài hàng loạt được để trống), gắn boot bằng `bcdboot`, chép
+   chọn** — cài hàng loạt được để trống), gắn boot bằng `bcdboot` + chuẩn hoá entry boot (v0.7.25), chép
    WinRE và tự restart vào Windows mới.
 
 **An toàn:** thao tác phá huỷ bắt buộc gõ đúng **serial đĩa đích** để xác
