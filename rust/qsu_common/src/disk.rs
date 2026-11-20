@@ -1501,6 +1501,94 @@ fn bcdboot_output_text(out: &cmd::CmdOut) -> String {
     detail
 }
 
+/// Chuẩn hoá entry boot NGAY SAU bcdboot (v0.7.25) — sửa lỗi
+/// 0xEF (CRITICAL_PROCESS_DIED) ở lần boot đầu của ảnh rút gọn.
+///
+/// Chẩn đoán thực địa 2026-11-20 (DESKTOP-704R89L, ảnh Tiny11
+/// Core build 26300.9457): cùng một bản Windows do WinNTSetup
+/// bung lên đúng layout phân vùng của tool — entry boot của
+/// WinNTSetup boot lên desktop bình thường, entry boot do
+/// bcdboot tạo (chọn lại từ menu boot) thì 0xEF. Đối chiếu
+/// `bcdedit /enum all`: hai entry chỉ khác nhau ở `path` và
+/// `systemroot` — entry của bcdboot mang
+/// `\\Windows\system32\winload.efi` và `\\Windows` (HAI dấu
+/// gạch chéo ở đầu; bcdboot dựng entry theo BCD-Template
+/// trong ảnh, mà template của ảnh rút gọn này đã bị sửa
+/// thành dạng đó), entry chuẩn là
+/// `\Windows\system32\winload.efi` và `\Windows`.
+///
+/// Hàm này: (1) đọc entry {default} trong BCD store trên
+/// phân vùng boot và ghi log nguyên trạng hai dòng
+/// path/systemroot TRƯỚC khi sửa (bằng chứng trong log thực
+/// địa); (2) đặt lại path (winload.efi cho UEFI / winload.exe
+/// cho BIOS) và systemroot về dạng chuẩn bằng
+/// `bcdedit /store`. Lỗi ở bước này chỉ ghi CẢNH BÁO — không
+/// đổi kết quả thành bại của bcdboot.
+pub fn normalize_boot_entry(log: &Arc<Logger>, boot_letter: char, uefi: bool) {
+    let store = if uefi {
+        format!("{}:\\EFI\\Microsoft\\Boot\\BCD", boot_letter)
+    } else {
+        format!("{}:\\Boot\\BCD", boot_letter)
+    };
+    match cmd::run_capture("bcdedit", &["/store", &store, "/enum", "{default}"]) {
+        Ok(out) => {
+            let mut seen = false;
+            for line in out.stdout.lines() {
+                let t = line.trim_start();
+                if t.starts_with("path") || t.starts_with("systemroot") {
+                    seen = true;
+                    log.line(&format!(
+                        "[Cơ chế] Entry boot sau bcdboot, TRƯỚC chuẩn hoá (v0.7.25): {}",
+                        line.trim()
+                    ));
+                }
+            }
+            if !seen {
+                log.line(
+                    "CẢNH BÁO: đọc được BCD store nhưng không thấy dòng path/systemroot trong entry {default} — vẫn thử chuẩn hoá.",
+                );
+            }
+        }
+        Err(e) => {
+            log.line(&format!(
+                "CẢNH BÁO: không đọc được entry boot trong {} để kiểm tra ({}).",
+                store, e
+            ));
+        }
+    }
+    let loader = if uefi {
+        "\\Windows\\system32\\winload.efi"
+    } else {
+        "\\Windows\\system32\\winload.exe"
+    };
+    for (elem, val) in [("path", loader), ("systemroot", "\\Windows")] {
+        match cmd::run_logged(
+            log,
+            "bcdedit",
+            &["/store", &store, "/set", "{default}", elem, val],
+        ) {
+            Ok(o) if o.code == Some(0) => {
+                log.line(&format!(
+                    "[Cơ chế] Đã chuẩn hoá entry boot (v0.7.25): {} = {}",
+                    elem, val
+                ));
+            }
+            Ok(o) => {
+                log.line(&format!(
+                    "CẢNH BÁO: chuẩn hoá entry boot — bcdedit /set {} trả mã {:?}; xem output phía trên.",
+                    elem, o.code
+                ));
+            }
+            Err(e) => {
+                log.line(&format!(
+                    "CẢNH BÁO: không chạy được bcdedit /set {}: {}",
+                    elem, e
+                ));
+            }
+        }
+    }
+}
+
 /// Chốt boot cho ca cài THEO PHÂN VÙNG: xem khối chú thích ở
 /// trên. `windows_letter` là ký tự ổ của phân vùng Windows VỪA
 /// bung ảnh xong; `uefi` là chế độ firmware của ca cài.
@@ -1634,6 +1722,11 @@ pub fn finalize_boot(
                     "bootmgr + Boot\\BCD"
                 }
             ));
+            // v0.7.25: chuẩn hoá entry boot ngay trong bước chốt
+            // boot dùng chung — path/systemroot có thể bị bcdboot
+            // dựng sai từ BCD-Template của ảnh rút gọn (lỗi 0xEF
+            // ở lần boot đầu, xem normalize_boot_entry).
+            normalize_boot_entry(log, boot_letter, uefi);
             return Ok(BootFinalize {
                 boot_letter,
                 disk_number,

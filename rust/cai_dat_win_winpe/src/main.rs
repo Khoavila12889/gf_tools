@@ -1431,7 +1431,13 @@ fn spawn_install(shared: SharedRef, sender: nwg::NoticeSender, plan: InstallPlan
             let s_arg = format!("{}:", bl);
             let fw = if plan.uefi { "UEFI" } else { "BIOS" };
             match cmd::run_logged(&log, &bcdboot_s, &[&win_arg, "/s", &s_arg, "/f", fw]) {
-                Ok(o) if o.code == Some(0) => Ok(bl),
+                Ok(o) if o.code == Some(0) => {
+                    // v0.7.25: chuẩn hoá entry boot (path/systemroot)
+                    // — sửa lỗi 0xEF do BCD-Template của ảnh rút gọn
+                    // (xem disk::normalize_boot_entry).
+                    disk::normalize_boot_entry(&log, bl, plan.uefi);
+                    Ok(bl)
+                }
                 Ok(o) => Err(format!(
                     "bcdboot vào phân vùng boot mới {}: trả mã {:?} — output của bcdboot đã ghi trong log phía trên; Windows mới chưa khởi động được.",
                     bl, o.code

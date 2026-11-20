@@ -3475,7 +3475,20 @@ Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài 
 Hai ca test thực địa v0.7.21 và v0.7.22 chạy nhầm hồ sơ STANDARD trong khi tưởng đang test hồ sơ CORE: nút "Ảnh rút gọn (Tiny11 Core)" ở wizard mặc định TẮT, nằm ở tab Tuỳ chọn và không lưu trạng thái — ca chạy vì thế nhận đủ unattend đầy đủ, agent hậu cài và bước inject driver sao lưu, rồi vẫn lỗi 0xEF như hồ sơ chuẩn (đọc rõ trong log engine của ca: có chép autounattend, có chuẩn bị tự cài ứng dụng, có thử inject driver từ bản sao lưu). Từ v0.7.24:
 - Nút Core ở wizard khởi tạo từ khoá defaultCoreProfile trong settings.json cạnh wizard, và TỰ GHI LẠI vào settings.json mỗi lần bật/tắt — bật một lần là các lần mở wizard sau vẫn hiện BẬT.
 - Log của wizard (ngay đầu ca staging), của engine (theo stage.json) và của module WinPE đều có dòng "[Cơ chế] HỒ SƠ TRIỂN KHAI: CORE ..." hoặc "STANDARD ..." — ca chạy thuộc hồ sơ nào, mở log là biết ngay, không phải suy đoán từ ảnh chụp màn hình.
-- Khi cài ảnh rút gọn, luôn kiểm tra nút Core đang BẬT (hoặc dòng HỒ SƠ TRIỂN KHAI: CORE trong log staging) trước khi để máy reboot vào WinPE; thấy STANDARD nghĩa là ca chạy chưa bật Core."#;
+- Khi cài ảnh rút gọn, luôn kiểm tra nút Core đang BẬT (hoặc dòng HỒ SƠ TRIỂN KHAI: CORE trong log staging) trước khi để máy reboot vào WinPE; thấy STANDARD nghĩa là ca chạy chưa bật Core.
+
+17. CHUẨN HOÁ ENTRY BOOT SAU BCDBOOT — SỬA LỖI 0xEF (v0.7.25)
+
+Chẩn đoán thực địa ngày 2026-11-20 trên DESKTOP-704R89L với ảnh Tiny11 Core (build 26300.9457) đã khép lại: hồ sơ CORE chạy thật (log engine ghi imageProfile=core, không inject driver, không chép WinRE, unattend chỉ pha OOBE) vẫn lỗi 0xEF; xoá hẳn unattend khỏi Windows\Panther vẫn 0xEF; đổi phân vùng Recovery từ kiểu WinRE sang kiểu dữ liệu thường vẫn 0xEF; thư mục Panther của bản lỗi chỉ có setup.etl — setupact.log và setuperr.log chưa từng được tạo, máy chết trước khi Windows Setup bắt đầu ghi log. Phép thử quyết định: WinNTSetup bung đúng ảnh đó lên đúng layout phân vùng tool vừa tạo thì boot qua "Getting ready", vào OOBE và lên desktop bình thường. Trên chính bản Windows đang chạy tốt đó, chọn lại entry boot cũ "Windows 11" do bcdboot của engine tạo thì lại CRITICAL_PROCESS_DIED (0xEF). Cùng đĩa, cùng phân vùng, cùng một bản Windows: entry của WinNTSetup boot được, entry của bcdboot thì không — thủ phạm là entry boot do bcdboot tạo ra từ ảnh rút gọn.
+
+Đối chiếu bcdedit /enum all của cả hai entry: các phần tử còn lại đều giống nhau (device và osdevice đều trỏ đúng phân vùng C:), chỉ khác ở path và systemroot — entry của bcdboot mang path "\\Windows\system32\winload.efi" và systemroot "\\Windows" (hai dấu gạch chéo ở đầu), entry chuẩn mang "\Windows\system32\winload.efi" và "\Windows". Nguyên nhân: bcdboot dựng entry theo BCD-Template lưu trong chính ảnh (Windows\System32\config\BCD-Template); template của ảnh rút gọn này đã bị phía build ảnh sửa thành dạng hai gạch chéo, nên mọi ca cài dùng bcdboot với ảnh này đều nhận entry lỗi, bất kể hồ sơ CORE hay STANDARD — đó cũng là lý do ảnh gốc Microsoft (template lành) cài bằng tool vẫn boot bình thường. WinNTSetup tự dựng entry nên không dính lỗi này.
+
+Từ v0.7.25, ngay sau khi bcdboot thành công, mọi đường cài đều chạy thêm bước chuẩn hoá entry boot (hàm dùng chung disk::normalize_boot_entry trong qsu_common):
+- Đọc entry {default} trong BCD store trên phân vùng boot và ghi log nguyên trạng hai dòng path/systemroot TRƯỚC khi sửa — log thực địa của ca cài sẽ cho thấy tận mắt giá trị bcdboot vừa tạo.
+- Đặt lại path = "\Windows\system32\winload.efi" (UEFI) hoặc "\Windows\system32\winload.exe" (BIOS) và systemroot = "\Windows" bằng bcdedit /store.
+- Áp dụng ở cả ba điểm gọi bcdboot: engine chế độ wipeDisk/rebuild; finalize_boot dùng chung (engine cài theo phân vùng + module cài theo phân vùng); module chế độ wipeDisk.
+- Bước chuẩn hoá chỉ sửa hai phần tử trên; nếu bcdedit lỗi, log ghi CẢNH BÁO và ca cài vẫn tiếp tục — kết quả thành bại của bcdboot không đổi.
+- Hồ sơ CORE/STANDARD, unattend và layout phân vùng giữ nguyên như v0.7.24."#;
 
 // ---------------------------------------------------------------------------
 // Trạng thái giao diện (luồng UI) + dựng cửa sổ

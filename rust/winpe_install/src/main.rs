@@ -170,7 +170,7 @@ fn main() {
     // diện, không ảnh hưởng luồng cài đặt hay dòng console.
     let ui = ProgressUi::start();
     ui.set_phase("Đang khởi động engine cài đặt", 0);
-    progress::mirror_line("=== QSU WinPEInstall v0.7.24 — engine cài đặt trong WinPE ===");
+    progress::mirror_line("=== QSU WinPEInstall v0.7.25 — engine cài đặt trong WinPE ===");
     let code = run(&ui);
     if code == 0 {
         std::process::exit(0);
@@ -769,9 +769,17 @@ fn run(ui: &ProgressUi) -> i32 {
         // ở thực địa v0.7.18.)
         let s_arg = format!("{}:", bl);
         let fw = if uefi { "UEFI" } else { "BIOS" };
-        cmd::run_logged(&log, &bcdboot_s, &[&win_arg, "/s", &s_arg, "/f", fw])
+        let ok = cmd::run_logged(&log, &bcdboot_s, &[&win_arg, "/s", &s_arg, "/f", fw])
             .map(|o| o.code == Some(0))
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if ok {
+            // v0.7.25: chuẩn hoá entry boot (path/systemroot) —
+            // bcdboot dựng entry theo BCD-Template của ảnh; ảnh
+            // rút gọn có template sai khiến boot đầu lỗi 0xEF
+            // (xem disk::normalize_boot_entry).
+            disk::normalize_boot_entry(&log, bl, uefi);
+        }
+        ok
     } else {
         // preserve (v0.7.19): chốt boot bằng helper DÙNG CHUNG
         // disk::finalize_boot — tìm phân vùng boot TRÊN CÙNG ĐĨA
