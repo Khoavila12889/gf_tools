@@ -544,15 +544,26 @@ fn run(ui: &ProgressUi) -> i32 {
 
     // --- Inject driver offline (IRST/NVMe...) nếu staging có ---
     ui.set_phase("Đang cài driver", 78);
+    // Hồ sơ CORE (v0.7.22): bỏ qua CẢ HAI đường inject driver —
+    // ảnh rút gọn giữ đúng bộ driver có sẵn trong ảnh như đường
+    // cài tay WinNTSetup. Nghi vấn thực địa 2026-11-20: nạp trọn
+    // bộ driver của bản Windows đầy đủ (bản sao lưu pnputil) vào
+    // ảnh đã cắt gọt làm một service/driver boot-start chết ở lần
+    // boot đầu → CRITICAL_PROCESS_DIED (0xEF).
+    let core_profile = cfg.image_profile.eq_ignore_ascii_case("core");
+    if core_profile {
+        log.line("[Cơ chế] Hồ sơ CORE (v0.7.22): BỎ QUA inject driver offline (cả driver staging lẫn driver đã sao lưu) — giữ đúng bộ driver trong ảnh như đường cài WinNTSetup.");
+    }
     let drivers_dir = stage_dir.join("Drivers");
-    if drivers_dir.exists()
+    if !core_profile
+        && drivers_dir.exists()
         && std::fs::read_dir(&drivers_dir).map(|mut d| d.next().is_some()).unwrap_or(false)
     {
         let img_arg = format!("/Image:{}", os_root);
         let drv_arg = format!("/Driver:{}", drivers_dir.to_string_lossy());
         log.line("Đang inject driver offline...");
         let _ = cmd::run_logged(&log, &dism, &[&img_arg, "/Add-Driver", &drv_arg, "/Recurse"]);
-    } else {
+    } else if !core_profile {
         log.line("Staging không có thư mục Drivers — bỏ qua inject driver.");
     }
 
@@ -566,7 +577,8 @@ fn run(ui: &ProgressUi) -> i32 {
     // tại, khác staging\Drivers, và không rỗng — tránh DISM /Recurse
     // quét nhầm cả ổ Data.
     let backup_rel = cfg.driver_backup_rel.trim();
-    let backup_safe = !backup_rel.is_empty()
+    let backup_safe = !core_profile
+        && !backup_rel.is_empty()
         && !backup_rel.contains("..")
         && !backup_rel.contains(':')
         && !backup_rel.starts_with('\\')

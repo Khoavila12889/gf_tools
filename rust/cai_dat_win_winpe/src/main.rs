@@ -1277,7 +1277,13 @@ fn spawn_install(shared: SharedRef, sender: nwg::NoticeSender, plan: InstallPlan
         }
 
         // --- Bước 3: inject driver offline (lỗi = cảnh báo, như engine) ---
-        if let Some(drv) = &plan.driver_dir {
+        // Hồ sơ CORE (v0.7.22): không inject driver dù đã chọn thư
+        // mục — giữ đúng bộ driver trong ảnh như đường WinNTSetup.
+        if plan.core_profile && plan.driver_dir.is_some() {
+            log.line("[Cơ chế] Hồ sơ CORE (v0.7.22): BỎ QUA inject driver offline — giữ đúng bộ driver trong ảnh như đường cài WinNTSetup.");
+        }
+        let drv_to_inject = if plan.core_profile { None } else { plan.driver_dir.as_ref() };
+        if let Some(drv) = drv_to_inject {
             set_progress(&shared, &sender, 85, "Đang inject driver offline...");
             let img_arg = format!("/Image:{}", target_root);
             let drv_arg = format!("/Driver:{}", drv.to_string_lossy());
