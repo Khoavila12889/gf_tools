@@ -1676,6 +1676,11 @@ fn persist_core_default(exe_dir: &Path, on: bool) {
 // đăng nhập đầu" — nếu ảnh đặt cờ đó cho tài khoản tạo từ
 // unattend, lần đăng nhập đầu có thể dừng ở màn hình đổi
 // mật khẩu (để trống cả ba ô rồi Enter) như ca v0.7.18.
+// v0.7.26: engine/module khôi phục SetupComplete.cmd tối
+// thiểu của v0.7.21 để dọn cờ đó — chẩn đoán 2026-11-20 đã
+// minh oan SetupComplete (0xEF là do entry boot của bcdboot,
+// xem mục 17) — nên ca cài CORE từ v0.7.26 vào thẳng desktop,
+// không còn dừng ở màn hình đổi mật khẩu.
 fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_password: &str, core_profile: bool) -> String {
     let comp = xml_escape(computer_name);
     let user = xml_escape(admin_user);
@@ -3222,19 +3227,20 @@ fn exec_clean(
     // --- autounattend.xml: 78%
     set_exec_progress(shared, sender, 78, "Sinh autounattend.xml...");
     if plan.core_profile {
-        // [Cơ chế] (v0.7.23): hồ sơ CORE — wizard sinh
+        // [Cơ chế] (v0.7.23 → v0.7.26): hồ sơ CORE — wizard sinh
         // autounattend.xml CHỈ chứa pha oobeSystem (build_unattend
         // với core_profile=true): ca cài vẫn tự động qua màn hình
         // thiết lập + tạo tài khoản + AutoLogon như tiêu chí của
         // tool, trong khi engine ngoài file này ra giữ đúng công
         // thức WinNTSetup (không inject driver, không chép
-        // WinRE, không agent hậu cài/SetupComplete).
+        // WinRE, không agent hậu cài) + từ v0.7.26 ghi thêm
+        // SetupComplete.cmd tối thiểu dọn cờ đổi mật khẩu.
         let unattend = build_unattend(settings, &plan.computer_name, &plan.admin_user, &plan.admin_password, true);
         if let Err(e) = std::fs::write(stage_dir.join("autounattend.xml"), unattend) {
             fail(format!("không ghi được autounattend.xml: {}", e));
             return;
         }
-        log.line("[Cơ chế] Hồ sơ CORE (v0.7.23): wizard đã sinh autounattend.xml CHỈ chứa pha oobeSystem (tự qua màn hình thiết lập + tạo tài khoản + AutoLogon; không pha specialize, không FirstLogonCommands) và stage.json ghi imageProfile=core — trong WinPE, engine chỉ chép unattend này: không inject driver, không chép WinRE, không agent hậu cài/SetupComplete.");
+        log.line("[Cơ chế] Hồ sơ CORE (v0.7.23 → v0.7.26): wizard đã sinh autounattend.xml CHỈ chứa pha oobeSystem (tự qua màn hình thiết lập + tạo tài khoản + AutoLogon; không pha specialize, không FirstLogonCommands) và stage.json ghi imageProfile=core — trong WinPE, engine chép unattend này và ghi SetupComplete.cmd tối thiểu dọn cờ đổi mật khẩu (v0.7.26): không inject driver, không chép WinRE, không agent hậu cài.");
     } else {
         let unattend = build_unattend(settings, &plan.computer_name, &plan.admin_user, &plan.admin_password, plan.core_profile);
         // [Cơ chế] (v0.7.19): dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu" của tài khoản admin.
@@ -3488,7 +3494,20 @@ Từ v0.7.25, ngay sau khi bcdboot thành công, mọi đường cài đều ch�
 - Đặt lại path = "\Windows\system32\winload.efi" (UEFI) hoặc "\Windows\system32\winload.exe" (BIOS) và systemroot = "\Windows" bằng bcdedit /store.
 - Áp dụng ở cả ba điểm gọi bcdboot: engine chế độ wipeDisk/rebuild; finalize_boot dùng chung (engine cài theo phân vùng + module cài theo phân vùng); module chế độ wipeDisk.
 - Bước chuẩn hoá chỉ sửa hai phần tử trên; nếu bcdedit lỗi, log ghi CẢNH BÁO và ca cài vẫn tiếp tục — kết quả thành bại của bcdboot không đổi.
-- Hồ sơ CORE/STANDARD, unattend và layout phân vùng giữ nguyên như v0.7.24."#;
+- Hồ sơ CORE/STANDARD, unattend và layout phân vùng giữ nguyên như v0.7.24.
+
+18. CORE VÀO THẲNG DESKTOP: KHÔI PHỤC SETUPCOMPLETE DỌN CỜ MẬT KHẨU (v0.7.26)
+
+Ca thực địa thành công của v0.7.25 (2026-11-20) vẫn còn một điểm dừng thủ công cuối cùng: bản Windows mới boot qua 0xEF, chạy hết pha setup, nhưng ở lần đăng nhập đầu AutoLogon bị chặn ở màn hình "The user's password must be changed before signing in" — đúng đánh đổi đã ghi ở mục 15 (unattend chỉ chứa pha oobeSystem nên không có lệnh nào dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu" cho tài khoản tạo từ unattend). Kỹ thuật viên phải bấm OK rồi để trống cả ba ô mật khẩu mới vào được desktop — chưa đạt trọn vẹn tiêu chí cài TỰ ĐỘNG.
+
+Từ v0.7.26, hồ sơ CORE khôi phục đúng cơ chế của v0.7.21 mà v0.7.22 đã bỏ: sau khi bung ảnh, engine WinPEInstall (và module Cài Đặt Win=WinPE ở bước ghi unattend) ghi thêm một file Windows\Setup\Scripts\SetupComplete.cmd TỐI THIỂU — chỉ một dòng lệnh "net user <tên tài khoản admin> /logonpasswordchg:no". Windows chạy SetupComplete.cmd bằng quyền SYSTEM ở cuối pha setup, TRƯỚC lần đăng nhập đầu tiên, nên cờ được dọn kịp và AutoLogon vào thẳng desktop. Nếu ảnh đã có sẵn SetupComplete.cmd (từ bộ tuỳ biến của ảnh), tool NỐI thêm dòng lệnh vào cuối file chứ không ghi đè nội dung sẵn có.
+
+Vì sao cơ chế này an toàn để đưa lại: nó từng bị loại ở v0.7.22 trong quá trình loại trừ lỗi 0xEF theo hướng "giữ đúng công thức WinNTSetup tối thiểu". Chẩn đoán ngày 2026-11-20 (mục 17) đã chốt thủ phạm 0xEF là entry boot do bcdboot dựng theo BCD-Template đã bị sửa trong ảnh — KHÔNG phải SetupComplete, không phải unattend, không phải agent hậu cài. Cơ chế SetupComplete vì thế được minh oan hoàn toàn và được khôi phục nguyên trạng cho hồ sơ CORE.
+
+Phạm vi thay đổi của v0.7.26 chỉ nằm ở hồ sơ CORE:
+- Hồ sơ STANDARD không đổi: cờ mật khẩu vẫn được dọn bằng hai lệnh FirstLogonCommands trong unattend đầy đủ như trước.
+- Hồ sơ CORE vẫn giữ: unattend chỉ pha oobeSystem, không inject driver, không chép WinRE, không agent hậu cài, không FirstLogonCommands — chỉ thêm file SetupComplete.cmd tối thiểu nói trên. Log của engine/module có dòng "[Cơ chế] Hồ sơ CORE (v0.7.26): đã ghi SetupComplete.cmd tối thiểu ..." để đối chiếu khi nghiệm thu.
+- Đánh đổi "có thể gặp màn hình đổi mật khẩu ở lần đăng nhập đầu" ở mục 15 nay ĐÃ HẾT: ca cài CORE từ v0.7.26 vào thẳng desktop bằng AutoLogon. Các đánh đổi còn lại của mục 15 (không đặt trước tên máy và múi giờ) giữ nguyên."#;
 
 // ---------------------------------------------------------------------------
 // Trạng thái giao diện (luồng UI) + dựng cửa sổ

@@ -170,7 +170,7 @@ fn main() {
     // diện, không ảnh hưởng luồng cài đặt hay dòng console.
     let ui = ProgressUi::start();
     ui.set_phase("Đang khởi động engine cài đặt", 0);
-    progress::mirror_line("=== QSU WinPEInstall v0.7.25 — engine cài đặt trong WinPE ===");
+    progress::mirror_line("=== QSU WinPEInstall v0.7.26 — engine cài đặt trong WinPE ===");
     let code = run(&ui);
     if code == 0 {
         std::process::exit(0);
@@ -614,15 +614,14 @@ fn run(ui: &ProgressUi) -> i32 {
         return 12;
     }
     if core_profile {
-        // Hồ sơ CORE (v0.7.23): chép autounattend CHỈ-pha-OOBE
-        // của wizard (nếu có trong staging) vào Panther để ca
-        // cài vẫn TỰ ĐỘNG qua màn hình thiết lập + tạo tài khoản
-        // + AutoLogon; ngoài file đó ra giữ đúng công thức
-        // WinNTSetup đã kiểm chứng boot qua 0xEF ở v0.7.22 —
-        // KHÔNG agent hậu cài, KHÔNG SetupComplete, KHÔNG
-        // inject driver, KHÔNG chép WinRE. Staging của v0.7.22
-        // (không có unattend) vẫn chạy được: khi đó cài thuần
-        // như WinNTSetup, vào OOBE gốc của ảnh.
+        // Hồ sơ CORE (v0.7.23 → v0.7.26): chép autounattend
+        // CHỈ-pha-OOBE của wizard (nếu có trong staging) vào
+        // Panther để ca cài vẫn TỰ ĐỘNG qua màn hình thiết lập +
+        // tạo tài khoản + AutoLogon; ngoài ra giữ đúng công
+        // thức WinNTSetup — KHÔNG agent hậu cài, KHÔNG inject
+        // driver, KHÔNG chép WinRE. Staging của v0.7.22 (không
+        // có unattend) vẫn chạy được: khi đó cài thuần như
+        // WinNTSetup, vào OOBE gốc của ảnh.
         let unattend_src = stage_dir.join("autounattend.xml");
         if unattend_src.exists() {
             for name in ["autounattend.xml", "unattend.xml"] {
@@ -631,10 +630,42 @@ fn run(ui: &ProgressUi) -> i32 {
                     return 12;
                 }
             }
-            log.line("[Cơ chế] Hồ sơ CORE (v0.7.23): đã chép autounattend (chỉ pha oobeSystem) vào Windows\\Panther — ngoài unattend này: KHÔNG agent hậu cài, KHÔNG SetupComplete, KHÔNG inject driver, KHÔNG chép WinRE (như WinNTSetup).");
+            log.line("[Cơ chế] Hồ sơ CORE (v0.7.23): đã chép autounattend (chỉ pha oobeSystem) vào Windows\\Panther — ngoài unattend này: KHÔNG agent hậu cài, KHÔNG inject driver, KHÔNG chép WinRE (như WinNTSetup).");
         } else {
             log.line("[Cơ chế] Hồ sơ CORE (v0.7.23): staging không có autounattend.xml — cài thuần như WinNTSetup (OOBE gốc của ảnh).");
         }
+        // SetupComplete.cmd TỐI THIỂU (v0.7.26 — khôi phục cơ
+        // chế của v0.7.21 mà v0.7.22 đã bỏ): một lệnh net user
+        // dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu" của
+        // tài khoản admin. Windows chạy file này bằng quyền
+        // SYSTEM ở cuối pha setup, TRƯỚC lần đăng nhập đầu —
+        // nên AutoLogon vào thẳng desktop. Ca thực địa
+        // v0.7.25 (2026-11-20) boot qua 0xEF nhưng dừng ở màn
+        // hình đổi mật khẩu; chẩn đoán cùng ngày đã chốt 0xEF
+        // do entry boot của bcdboot — SetupComplete vô tội.
+        // Ảnh đã có sẵn SetupComplete.cmd thì nối thêm dòng,
+        // không ghi đè.
+        let scripts = Path::new(&os_root).join("Windows").join("Setup").join("Scripts");
+        let sc_line = format!("net user {} /logonpasswordchg:no", cfg.admin_user);
+        let sc_res = std::fs::create_dir_all(&scripts).and_then(|_| {
+            let sc = scripts.join("SetupComplete.cmd");
+            if sc.exists() {
+                let mut cur = std::fs::read_to_string(&sc).unwrap_or_default();
+                if !cur.ends_with('\n') {
+                    cur.push_str("\r\n");
+                }
+                cur.push_str(&sc_line);
+                cur.push_str("\r\n");
+                std::fs::write(&sc, cur)
+            } else {
+                std::fs::write(&sc, format!("@echo off\r\n{}\r\n", sc_line))
+            }
+        });
+        if let Err(e) = sc_res {
+            log.line(&format!("LỖI: Không ghi được SetupComplete.cmd: {}", e));
+            return 12;
+        }
+        log.line("[Cơ chế] Hồ sơ CORE (v0.7.26): bỏ qua agent hậu cài, đã ghi SetupComplete.cmd tối thiểu (net user <tên> /logonpasswordchg:no) vào Windows\\Setup\\Scripts để dọn cờ 'phải đổi mật khẩu ở lần đăng nhập đầu' trước khi AutoLogon chạy — khôi phục cơ chế v0.7.21 (đã minh oan: 0xEF là do entry boot của bcdboot, không phải SetupComplete).");
     } else {
         let unattend_src = stage_dir.join("autounattend.xml");
         if unattend_src.exists() {

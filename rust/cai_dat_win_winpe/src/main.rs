@@ -613,6 +613,11 @@ fn xml_escape(s: &str) -> String {
 // đăng nhập đầu" — nếu ảnh đặt cờ đó cho tài khoản tạo từ
 // unattend, lần đăng nhập đầu có thể dừng ở màn hình đổi
 // mật khẩu (để trống cả ba ô rồi Enter) như ca v0.7.18.
+// v0.7.26: engine/module khôi phục SetupComplete.cmd tối
+// thiểu của v0.7.21 để dọn cờ đó — chẩn đoán 2026-11-20 đã
+// minh oan SetupComplete (0xEF là do entry boot của bcdboot,
+// xem mục 17) — nên ca cài CORE từ v0.7.26 vào thẳng desktop,
+// không còn dừng ở màn hình đổi mật khẩu.
 fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_password: &str, core_profile: bool) -> String {
     let comp = xml_escape(computer_name);
     let user = xml_escape(admin_user);
@@ -1334,12 +1339,18 @@ fn spawn_install(shared: SharedRef, sender: nwg::NoticeSender, plan: InstallPlan
 
         // --- Bước 4: autounattend vào Windows\Panther ---
         if plan.core_profile {
-            // Hồ sơ CORE (v0.7.23): ghi autounattend CHỈ-pha-OOBE
-            // (plan luôn sinh sẵn cho CORE) vào Panther để ca cài
-            // tự qua màn hình thiết lập + tạo tài khoản +
-            // AutoLogon; ngoài file đó ra giữ công thức
-            // WinNTSetup — KHÔNG agent hậu cài, KHÔNG
-            // SetupComplete, KHÔNG FirstLogonCommands.
+            // Hồ sơ CORE (v0.7.23 → v0.7.26): ghi autounattend
+            // CHỈ-pha-OOBE (plan luôn sinh sẵn cho CORE) vào
+            // Panther để ca cài tự qua màn hình thiết lập + tạo
+            // tài khoản + AutoLogon; ngoài file đó ra giữ công
+            // thức WinNTSetup — KHÔNG agent hậu cài, KHÔNG
+            // FirstLogonCommands. v0.7.26: khôi phục cơ chế
+            // v0.7.21 — ghi thêm SetupComplete.cmd TỐI THIỂU
+            // (một lệnh net user dọn cờ "phải đổi mật khẩu ở lần
+            // đăng nhập đầu"); chẩn đoán 2026-11-20 đã chốt 0xEF
+            // do entry boot của bcdboot, SetupComplete vô tội —
+            // ca thực địa v0.7.25 boot qua 0xEF nhưng dừng ở màn
+            // hình đổi mật khẩu.
             if let Some(xml) = &plan.unattend_xml {
                 let panther = Path::new(&target_root).join("Windows").join("Panther");
                 let write_res = std::fs::create_dir_all(&panther).and_then(|_| {
@@ -1347,12 +1358,39 @@ fn spawn_install(shared: SharedRef, sender: nwg::NoticeSender, plan: InstallPlan
                     std::fs::write(panther.join("unattend.xml"), xml)
                 });
                 match write_res {
-                    Ok(_) => log.line("[Cơ chế] Hồ sơ CORE (v0.7.23): đã ghi autounattend (chỉ pha oobeSystem) vào Windows\\Panther — không agent hậu cài, không SetupComplete, không FirstLogonCommands."),
+                    Ok(_) => log.line("[Cơ chế] Hồ sơ CORE (v0.7.23): đã ghi autounattend (chỉ pha oobeSystem) vào Windows\\Panther — không agent hậu cài, không FirstLogonCommands."),
                     Err(e) => {
                         done(&shared, &sender, fail("Ghi autounattend.xml", e.to_string()));
                         return;
                     }
                 }
+                // SetupComplete.cmd tối thiểu (v0.7.26): Windows
+                // chạy bằng quyền SYSTEM ở cuối pha setup, trước
+                // lần đăng nhập đầu tiên. Ảnh đã có sẵn
+                // SetupComplete.cmd (từ bộ tuỳ biến) thì nối
+                // thêm dòng của mình, KHÔNG ghi đè nội dung sẵn
+                // có của ảnh.
+                let scripts = Path::new(&target_root).join("Windows").join("Setup").join("Scripts");
+                let sc_line = format!("net user {} /logonpasswordchg:no", plan.admin_user);
+                let sc_res = std::fs::create_dir_all(&scripts).and_then(|_| {
+                    let sc = scripts.join("SetupComplete.cmd");
+                    if sc.exists() {
+                        let mut cur = std::fs::read_to_string(&sc).unwrap_or_default();
+                        if !cur.ends_with('\n') {
+                            cur.push_str("\r\n");
+                        }
+                        cur.push_str(&sc_line);
+                        cur.push_str("\r\n");
+                        std::fs::write(&sc, cur)
+                    } else {
+                        std::fs::write(&sc, format!("@echo off\r\n{}\r\n", sc_line))
+                    }
+                });
+                if let Err(e) = sc_res {
+                    done(&shared, &sender, fail("Ghi SetupComplete.cmd", e.to_string()));
+                    return;
+                }
+                log.line("[Cơ chế] Hồ sơ CORE (v0.7.26): đã ghi SetupComplete.cmd tối thiểu (net user <tên> /logonpasswordchg:no) vào Windows\\Setup\\Scripts — dọn cờ 'phải đổi mật khẩu ở lần đăng nhập đầu' trước khi AutoLogon chạy; bỏ qua agent hậu cài.");
             }
         } else if let Some(xml) = &plan.unattend_xml {
             if let Err(e) = qsu_common::post_install::write_to_windows(Path::new(&target_root)) {
