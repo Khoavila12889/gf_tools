@@ -1607,7 +1607,21 @@ fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_password: &str) -> String {
+// Hồ sơ CORE (v0.7.21, tham số `core_profile`): cho ảnh Windows
+// rút gọn kiểu Tiny11 Core — các ảnh này thiếu nhiều component mà
+// một unattend đầy đủ chạm tới, và thực địa cho thấy chúng boot
+// vòng lỗi 0xEF khi cài bằng pipeline chuẩn nhưng lên ngon khi
+// cài tay tối thiểu kiểu WinNTSetup. Khác biệt của hồ sơ CORE:
+// unattend KHÔNG mang <FirstLogonCommands> (không lệnh dọn cờ
+// mật khẩu, không lệnh hậu cài); cờ "phải đổi mật khẩu ở lần
+// đăng nhập đầu" của tài khoản admin được dọn bằng
+// SetupComplete.cmd tối thiểu do engine/module ghi vào
+// Windows\Setup\Scripts của bản Windows mới (chạy bằng quyền
+// SYSTEM ở cuối pha setup, TRƯỚC lần đăng nhập đầu — nên
+// AutoLogon vẫn vào thẳng desktop). Phần còn lại của unattend
+// (locale, tên máy, OOBE rút gọn, LocalAccount, AutoLogon) giữ
+// nguyên như hồ sơ standard.
+fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_password: &str, core_profile: bool) -> String {
     let comp = xml_escape(computer_name);
     let user = xml_escape(admin_user);
     let pass = xml_escape(admin_password);
@@ -1651,6 +1665,18 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
         </SynchronousCommand>"#,
         user = user
     );
+    // Khối <FirstLogonCommands> hoàn chỉnh của hồ sơ standard
+    // (hai lệnh dọn cờ mật khẩu + lệnh hậu cài). Hồ sơ CORE: khối
+    // này VẮNG HẲN trong unattend — xem ghi chú đầu hàm.
+    let fl_block = if core_profile {
+        String::new()
+    } else {
+        format!(
+            "      <FirstLogonCommands>\n{flc}\n        <SynchronousCommand wcm:action=\"add\">\n          <Order>3</Order>\n          <CommandLine>{post}</CommandLine>\n          <Description>Tự cài UltraViewer, Chrome và 7-Zip sau khi vào Windows mới</Description>\n          <RequiresUserInput>false</RequiresUserInput>\n        </SynchronousCommand>\n      </FirstLogonCommands>\n",
+            flc = fl_commands,
+            post = xml_escape(qsu_common::post_install::FIRST_LOGON_COMMAND),
+        )
+    };
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
@@ -1694,15 +1720,7 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
         <Username>{user}</Username>{autologon_pw}
         <LogonCount>1</LogonCount>
       </AutoLogon>
-      <FirstLogonCommands>
-{flc}
-        <SynchronousCommand wcm:action="add">
-          <Order>3</Order>
-          <CommandLine>{post_command}</CommandLine>
-          <Description>Tự cài UltraViewer, Chrome và 7-Zip sau khi vào Windows mới</Description>
-          <RequiresUserInput>false</RequiresUserInput>
-        </SynchronousCommand>
-      </FirstLogonCommands>
+{fl_block}
     </component>
   </settings>
 </unattend>
@@ -1713,8 +1731,7 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
         tz = xml_escape(&st.timezone),
         comp = comp,
         user = user,
-        flc = fl_commands,
-        post_command = xml_escape(qsu_common::post_install::FIRST_LOGON_COMMAND),
+        fl_block = fl_block,
     )
 }
 
@@ -1767,6 +1784,8 @@ struct ExecPlan {
     admin_user: String,
     admin_password: String,
     apply_tweaks: bool,
+    /// Hồ sơ CORE (v0.7.21) — ghi vào stage.json `imageProfile`.
+    core_profile: bool,
     /// Chế độ phân vùng khi cài mới (chỉ có nghĩa khi mode_clean).
     part_mode: PartMode,
     /// Đĩa vật lý đích của wipeDisk/rebuild (số thứ tự + serial phần
@@ -3124,9 +3143,16 @@ fn exec_clean(
 
     // --- autounattend.xml: 78%
     set_exec_progress(shared, sender, 78, "Sinh autounattend.xml...");
-    let unattend = build_unattend(settings, &plan.computer_name, &plan.admin_user, &plan.admin_password);
+    let unattend = build_unattend(settings, &plan.computer_name, &plan.admin_user, &plan.admin_password, plan.core_profile);
+    if plan.core_profile {
+        // [Cơ chế] (v0.7.21): hồ sơ CORE cho ảnh rút gọn — unattend
+        // không FirstLogonCommands; cờ mật khẩu do SetupComplete.cmd
+        // của engine dọn trước lần đăng nhập đầu.
+        log.line("[Cơ chế] Hồ sơ CORE (v0.7.21): autounattend.xml KHÔNG mang FirstLogonCommands và stage.json ghi imageProfile=core — engine sẽ bỏ qua agent hậu cài, thay bằng SetupComplete.cmd tối thiểu (net user <tên> /logonpasswordchg:no) ghi vào Windows\\Setup\\Scripts của bản Windows mới để dọn cờ 'phải đổi mật khẩu ở lần đăng nhập đầu' trước khi AutoLogon chạy.");
+    } else {
     // [Cơ chế] (v0.7.19): dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu" của tài khoản admin.
     log.line("[Cơ chế] autounattend.xml mang hai lệnh FirstLogonCommands cho tài khoản admin — `net user <tên> /logonpasswordchg:no` và đặt PasswordNeverExpires: tài khoản Setup tạo từ unattend mang cờ phải đổi mật khẩu ở lần đăng nhập đầu (pwdLastSet=0), không dọn cờ thì AutoLogon bị chặn ở màn hình đổi mật khẩu thay vì vào thẳng desktop (thực địa v0.7.18). Lệnh chạy ở lần đăng nhập đầu, áp dụng cả khi mật khẩu để trống lẫn khi có đặt.");
+    }
     if let Err(e) = std::fs::write(stage_dir.join("autounattend.xml"), unattend) {
         fail(format!("không ghi được autounattend.xml: {}", e));
         return;
@@ -3173,6 +3199,11 @@ fn exec_clean(
         admin_password: String::new(), // không ghi vào stage.json
         ultraviewer_password: String::new(),
         apply_tweaks: plan.apply_tweaks,
+        image_profile: if plan.core_profile {
+            "core".to_string()
+        } else {
+            "standard".to_string()
+        },
         apps: Vec::new(),
         driver_backup_rel: DRIVER_BACKUP_FOLDER.to_string(),
         logs_folder: settings.logs_folder.clone(),
@@ -3343,7 +3374,14 @@ Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài 
 - Từ v0.7.19 bước chốt boot của cả hai đường preserve dùng chung một hàm trong thư viện dùng chung (disk::finalize_boot): xác định đĩa vật lý chứa phân vùng Windows đích, tìm phân vùng boot TRÊN CHÍNH ĐĨA ĐÓ theo loại phân vùng — GPT là phân vùng EFI System theo GUID loại, MBR là phân vùng System Reserved đang active (không có thì dùng chính phân vùng Windows) — thiếu ký tự ổ thì tự gán bằng cùng cơ chế tự chữa của mục 7 (script diskpart phụ / SetVolumeMountPointW, chốt bằng truy cập thử đường dẫn thật), rồi mới chạy bcdboot (/f UEFI cho GPT, /f BIOS cho MBR) với output được thu trọn vào log. Thành công chỉ được tính khi KIỂM CHỨNG ĐƯỢC file boot thật trên phân vùng boot (EFI\Microsoft\Boot\bootmgfw.efi + BCD với UEFI; bootmgr + Boot\BCD với BIOS) — mã thoát 0 của bcdboot chưa đủ; lần chạy đầu chưa đạt thì tự chạy lại một lần. Thất bại hẳn thì thông báo lỗi mang theo nguyên văn output của bcdboot. Không tồn tại đường nào bỏ qua bước boot lặng lẽ. Hai chế độ WIPE DISK / REBUILD giữ nguyên đường chốt boot riêng như trước.
 - Module Cài Đặt Win = WinPE bỏ phụ thuộc PowerShell khi chọn nguồn: file ISO được mount bằng VirtDisk API gốc (cùng cơ chế lớp 3 của mục 1, nay đặt trong thư viện dùng chung) rồi đọc thẳng sources\install.* — các WinPE phổ biến không có cmdlet Storage vẫn mount được ISO; gỡ mount đối xứng bằng DetachVirtualDisk khi đổi nguồn hoặc đóng module. Nếu chính VirtDisk cũng không attach được, thông báo hướng dẫn mount sẵn ISO bằng công cụ của WinPE rồi chọn/gõ thẳng file sources\install.wim (hoặc .esd/.swm) — đúng đường đã cứu ca thực địa. Nút "Chọn file..." nay mở TRÌNH DUYỆT FILE TÍCH HỢP của module (liệt kê mọi ổ đĩa, duyệt thư mục, lọc *.iso/*.wim/*.esd/*.swm, hiện tên file đầy đủ, nhấp đúp để chọn) thay cho hộp thoại file của Windows — hộp thoại đó không mở được trong các WinPE này; ô gõ đường dẫn trực tiếp vẫn dùng được như trước. Và sau bất kỳ lần nạp nguồn nào — thành công hay lỗi — các nút bấm đều được mở khoá lại: luồng nền được bọc bắt lỗi toàn diện và hộp thoại chỉ hiện sau khi trạng thái nút đã cập nhật, nút chỉ khoá trong lúc thao tác thật sự đang chạy (bản cũ từng kẹt nút "Nạp nguồn" sau một lần nạp lỗi, phải mở lại module).
 - autounattend.xml (cả wizard lẫn module WinPE sinh) nay mang hai lệnh chạy ở lần đăng nhập đầu cho tài khoản admin: net user <tên> /logonpasswordchg:no và đặt mật khẩu không hết hạn (PasswordNeverExpires qua PowerShell Set-LocalUser). Tài khoản Setup tạo từ unattend mang cờ "phải đổi mật khẩu ở lần đăng nhập đầu tiên" (pwdLastSet = 0) — thực địa bản v0.7.18 cho thấy AutoLogon bị chặn ở màn hình đổi mật khẩu (User name / Old password / New password) thay vì vào thẳng desktop. Hai lệnh này dọn cờ đó ngay ở lần đăng nhập đầu, áp dụng cả khi mật khẩu để trống lẫn khi có đặt, để ca cài hoàn toàn không cần người trông vẫn về được desktop.
-"#;
+
+13. HỒ SƠ CORE CHO ẢNH RÚT GỌN — TINY11 CORE (từ v0.7.21)
+
+Ảnh Windows rút gọn kiểu Tiny11 Core (chế từ ISO gốc Microsoft rồi cắt giảm component) có thể boot vòng lỗi CRITICAL_PROCESS_DIED (0xEF) ở lần khởi động đầu khi cài bằng hồ sơ chuẩn, trong khi cài tay tối thiểu (chia phân vùng, bung ảnh, bcdboot — kiểu WinNTSetup) thì lên bình thường. Từ v0.7.21, wizard có nút bật/tắt "Ảnh rút gọn (Tiny11 Core)" ở tab Tuỳ chọn cài đặt, module Cài Đặt Win=WinPE có ô tick tương ứng; bật lên thì ca cài đi theo hồ sơ CORE:
+- autounattend.xml KHÔNG có khối <FirstLogonCommands>: không lệnh dọn cờ mật khẩu ở phiên đăng nhập đầu, không lệnh hậu cài. Phần còn lại của unattend (locale, tên máy, OOBE rút gọn, tài khoản LocalAccount, AutoLogon) giữ nguyên như hồ sơ chuẩn. stage.json ghi "imageProfile": "core" (hồ sơ chuẩn ghi "standard"; stage.json cũ không có trường này được hiểu là standard).
+- Sau khi bung ảnh, engine (đường wizard) và module WinPE (đường cài thẳng trong WinPE) BỎ QUA bước chuẩn bị agent hậu cài, thay vào đó ghi Windows\Setup\Scripts\SetupComplete.cmd tối thiểu chứa đúng một lệnh: net user <tài khoản admin> /logonpasswordchg:no. Windows chạy SetupComplete.cmd bằng quyền SYSTEM ở cuối pha setup, TRƯỚC lần đăng nhập đầu tiên, nên cờ "phải đổi mật khẩu ở lần đăng nhập đầu" của tài khoản admin vẫn được dọn kịp và AutoLogon vào thẳng desktop, mà không cần lệnh nào chạy trong phiên đăng nhập đầu. Nếu ảnh đã có sẵn SetupComplete.cmd (từ bộ tuỳ biến), tool nối thêm dòng lệnh vào cuối file chứ không ghi đè.
+- Đánh đổi: hồ sơ CORE không đặt PasswordNeverExpires cho tài khoản admin như hồ sơ chuẩn (việc đó cần PowerShell ở phiên đăng nhập đầu); cần thì đặt sau ngay trong Windows mới. Hồ sơ CORE cũng không tự cài ứng dụng sau đăng nhập.
+- Ngoài phần cấu hình sau bung ảnh, mọi cơ chế an toàn về đĩa, phân vùng và boot (mục 5, 6, 7, 12) giữ nguyên ở cả hai hồ sơ."#;
 
 // ---------------------------------------------------------------------------
 // Trạng thái giao diện (luồng UI) + dựng cửa sổ
@@ -3484,6 +3522,9 @@ struct Model {
     /// chụp lại trạng thái tick trước khi vẽ lại danh sách).
     parts_disk: Option<u32>,
     apply_tweaks: bool,
+    /// Hồ sơ CORE cho ảnh Windows rút gọn (Tiny11 Core) — v0.7.21:
+    /// unattend tối thiểu, xem `build_unattend`.
+    core_profile: bool,
     busy_ed: bool,
     running: bool,
     last_clean: bool,
@@ -3580,6 +3621,7 @@ struct App {
     /// serial đĩa đích theo từng ký tự gõ (v0.7.17).
     lbl_serial_fb: nwg::Label,
     btn_tweaks: nwg::Button,
+    btn_core: nwg::Button,
     btn_start: nwg::Button,
     btn_close: nwg::Button,
     model: RefCell<Model>,
@@ -3917,6 +3959,12 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
     nwg::Button::builder().text("Tuỳ chỉnh Windows sau cài: TẮT").font(Some(font_button)).parent(&tab_opt).build(&mut btn_tweaks).expect("btn");
     btn_tweaks.set_position(8, 414);
     btn_tweaks.set_size(320, 32);
+    // Nút bật/tắt hồ sơ CORE cho ảnh rút gọn (v0.7.21) — cùng mẫu
+    // nút tweaks: trạng thái nằm ở Model, nhãn nút phản ánh BẬT/TẮT.
+    let mut btn_core = Default::default();
+    nwg::Button::builder().text("Ảnh rút gọn (Tiny11 Core): TẮT").font(Some(font_button)).parent(&tab_opt).build(&mut btn_core).expect("btn");
+    btn_core.set_position(8, 452);
+    btn_core.set_size(320, 32);
     let lbl_stage_info = add_label!(&tab_opt, "", font_small, (340, 418), (629, 22));
 
     // --- Tiến trình + log + nút hành động (sân chính, GHIM dưới
@@ -4033,6 +4081,7 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
     lay!(inp_pw2, GROUP_TAB2, XMode::ShiftRight, WMode::Fixed, None);
     lay!(_pw_note, GROUP_TAB2, XMode::ShiftRight, WMode::Fixed, None);
     lay!(btn_tweaks, GROUP_TAB2, XMode::Fixed, WMode::Fixed, None);
+    lay!(btn_core, GROUP_TAB2, XMode::Fixed, WMode::Fixed, None);
     lay!(lbl_stage_info, GROUP_TAB2, XMode::Fixed, WMode::Grow, None);
     // Sân tab 3 — "Hướng dẫn" (v0.7.12): ô text duy nhất của trang,
     // nở theo cả hai chiều; chỉ số flex FLEX_TABS ở đây nghĩa là
@@ -4073,7 +4122,7 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
         inp_computer, inp_user, inp_pw1, inp_pw2,
         txt_log,
         btn_rescan, btn_browse, btn_fetch, btn_download,
-        btn_mode_inplace, btn_mode_clean, btn_tweaks, btn_start, btn_close,
+        btn_mode_inplace, btn_mode_clean, btn_tweaks, btn_core, btn_start, btn_close,
         btn_part_preserve, btn_part_wipe, btn_part_rebuild,
         lbl_disk_cap, cmb_disk, lbl_disk_hint, lst_disk_parts, lbl_disk_warn, lbl_serial_cap, inp_disk_serial,
         lbl_disk_id, lbl_serial_fb,
@@ -4097,6 +4146,7 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
             rebuild_checks_disk: None,
             parts_disk: None,
             apply_tweaks: false,
+            core_profile: false,
             busy_ed: false,
             running: false,
             last_clean: false,
@@ -5761,6 +5811,14 @@ fn handle_event(app: &Rc<App>, evt: nwg::Event, handle: nwg::ControlHandle) {
                 };
                 app.btn_tweaks
                     .set_text(if on { "Tuỳ chỉnh Windows sau cài: BẬT" } else { "Tuỳ chỉnh Windows sau cài: TẮT" });
+            } else if handle == app.btn_core.handle {
+                let on = {
+                    let mut m = app.model.borrow_mut();
+                    m.core_profile = !m.core_profile;
+                    m.core_profile
+                };
+                app.btn_core
+                    .set_text(if on { "Ảnh rút gọn (Tiny11 Core): BẬT" } else { "Ảnh rút gọn (Tiny11 Core): TẮT" });
             } else if handle == app.btn_start.handle {
                 on_start(app);
             }
@@ -6288,6 +6346,7 @@ fn on_start_inner(app: &Rc<App>) {
             admin_user,
             admin_password: pw1,
             apply_tweaks: m.apply_tweaks,
+            core_profile: m.core_profile,
             part_mode: if wipe {
                 PartMode::WipeDisk
             } else if rebuild {

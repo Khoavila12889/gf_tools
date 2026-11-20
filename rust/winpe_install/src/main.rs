@@ -170,7 +170,7 @@ fn main() {
     // diện, không ảnh hưởng luồng cài đặt hay dòng console.
     let ui = ProgressUi::start();
     ui.set_phase("Đang khởi động engine cài đặt", 0);
-    progress::mirror_line("=== QSU WinPEInstall v0.7.19 — engine cài đặt trong WinPE ===");
+    progress::mirror_line("=== QSU WinPEInstall v0.7.21 — engine cài đặt trong WinPE ===");
     let code = run(&ui);
     if code == 0 {
         std::process::exit(0);
@@ -604,15 +604,45 @@ fn run(ui: &ProgressUi) -> i32 {
                 return 12;
             }
         }
-        if let Err(e) = qsu_common::post_install::write_to_windows(Path::new(&os_root)) {
-            log.line(&format!("LỖI: Không chuẩn bị được tự cài ứng dụng: {}", e));
-            return 12;
-        }
-        log.line("Đã chuẩn bị tự cài UltraViewer, Chrome và 7-Zip sau đăng nhập.");
-        let notify_dir = Path::new(&os_root).join("ProgramData").join("QSU");
-        if let Err(e) = qsu_common::post_install::copy_telegram_config(&stage_dir, &notify_dir) {
-            log.line(&format!("LỖI: Không chép được cấu hình Telegram: {}", e));
-            return 12;
+        if cfg.image_profile.eq_ignore_ascii_case("core") {
+            // Hồ sơ CORE (v0.7.21): bỏ qua agent hậu cài; ghi
+            // SetupComplete.cmd tối thiểu — một lệnh net user dọn
+            // cờ "phải đổi mật khẩu ở lần đăng nhập đầu", chạy bằng
+            // quyền SYSTEM ở cuối pha setup, trước lần đăng nhập
+            // đầu tiên. Nếu ảnh đã có sẵn SetupComplete.cmd thì nối
+            // thêm dòng, không ghi đè.
+            let scripts = Path::new(&os_root).join("Windows").join("Setup").join("Scripts");
+            let sc_line = format!("net user {} /logonpasswordchg:no", cfg.admin_user);
+            let sc_res = std::fs::create_dir_all(&scripts).and_then(|_| {
+                let sc = scripts.join("SetupComplete.cmd");
+                if sc.exists() {
+                    let mut cur = std::fs::read_to_string(&sc).unwrap_or_default();
+                    if !cur.ends_with('\n') {
+                        cur.push_str("\r\n");
+                    }
+                    cur.push_str(&sc_line);
+                    cur.push_str("\r\n");
+                    std::fs::write(&sc, cur)
+                } else {
+                    std::fs::write(&sc, format!("@echo off\r\n{}\r\n", sc_line))
+                }
+            });
+            if let Err(e) = sc_res {
+                log.line(&format!("LỖI: Không ghi được SetupComplete.cmd: {}", e));
+                return 12;
+            }
+            log.line("[Cơ chế] Hồ sơ CORE (v0.7.21): stage.json imageProfile=core — bỏ qua agent hậu cài, đã ghi SetupComplete.cmd tối thiểu (net user <tên> /logonpasswordchg:no) vào Windows\\Setup\\Scripts để dọn cờ 'phải đổi mật khẩu ở lần đăng nhập đầu' trước khi AutoLogon chạy.");
+        } else {
+            if let Err(e) = qsu_common::post_install::write_to_windows(Path::new(&os_root)) {
+                log.line(&format!("LỖI: Không chuẩn bị được tự cài ứng dụng: {}", e));
+                return 12;
+            }
+            log.line("Đã chuẩn bị tự cài UltraViewer, Chrome và 7-Zip sau đăng nhập.");
+            let notify_dir = Path::new(&os_root).join("ProgramData").join("QSU");
+            if let Err(e) = qsu_common::post_install::copy_telegram_config(&stage_dir, &notify_dir) {
+                log.line(&format!("LỖI: Không chép được cấu hình Telegram: {}", e));
+                return 12;
+            }
         }
         log.line("Đã copy autounattend.xml vào Windows\\Panther.");
     }

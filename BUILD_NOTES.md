@@ -1752,6 +1752,17 @@ từng cửa sổ nằm ở `docs/chuan_giao_dien.md`.
   (ví dụ ca cài theo phân vùng của v0.7.19) để chắc chắn
   hành vi không đổi.
 
+## v0.7.21 (2026-11-20) — Hồ sơ CORE cho ảnh rút gọn (Tiny11 Core) — BRANCH tiny11-core-profile
+
+- **Bối cảnh (thực địa 2026-11-20):** ảnh Windows rút gọn kiểu Tiny11 Core (chế từ ISO gốc Microsoft) cài bằng tool tự boot vòng CRITICAL_PROCESS_DIED (0xEF) ở lần khởi động đầu; cài tay bằng MiniTool Partition Wizard + WinNTSetup (EFI/MSR/Recovery/C + bung ảnh + bcdboot) thì lên bình thường, rất nhanh. Phần khác biệt chính của pipeline chuẩn so với đường cài tối thiểu: unattend đầy đủ (FirstLogonCommands) + bước chuẩn bị agent hậu cài trong bản Windows mới. Bản này thêm hồ sơ triển khai tối thiểu để kiểm chứng giả thuyết đó trên máy test. Toàn bộ thay đổi nằm trên branch `tiny11-core-profile` tạo từ đúng commit v0.7.20 (1051878) và đã push; `main` không đổi — đường lui an toàn.
+- **Wizard:** nút "Ảnh rút gọn (Tiny11 Core): TẮT/BẬT" ở tab Tuỳ chọn cài đặt (dưới nút Tuỳ chỉnh Windows sau cài), trạng thái ở Model.core_profile → ExecPlan → stage.json `imageProfile` ("core"/"standard"; StageConfig thêm trường, stage.json cũ thiếu trường hiểu là standard).
+- **Module WinPE:** ô tick "Ảnh rút gọn (Tiny11 Core)..." ở cụm cài đặt (chỉ có nghĩa khi tick Tự thiết lập Windows); trạng thái vào InstallPlan.core_profile; hộp xác nhận cuối ghi rõ hồ sơ CORE không tự cài ứng dụng sau đăng nhập.
+- **build_unattend (cả hai bản sao, đồng bộ):** thêm tham số `core_profile`. Hồ sơ chuẩn: khối `<FirstLogonCommands>` cho ra XML giữ nguyên từng byte như v0.7.20 (chỉ tái cấu trúc cách dựng chuỗi trong mã nguồn). Hồ sơ CORE: unattend không có khối FirstLogonCommands; locale/tên máy/OOBE/LocalAccount/AutoLogon giữ nguyên.
+- **Thực thi sau bung ảnh:** engine WinPEInstall đọc `imageProfile` từ stage.json; module WinPE theo InstallPlan. Hồ sơ CORE: bỏ qua `post_install::write_to_windows` + chép cấu hình Telegram, thay bằng ghi `Windows\Setup\Scripts\SetupComplete.cmd` = một lệnh `net user <admin> /logonpasswordchg:no` (Windows chạy bằng SYSTEM ở cuối pha setup, TRƯỚC lần đăng nhập đầu — cờ "phải đổi mật khẩu" vẫn được dọn, AutoLogon vào thẳng desktop); ảnh có sẵn SetupComplete.cmd thì nối thêm dòng, không ghi đè. Mã nguồn `qsu_common::post_install` không sửa; hồ sơ chuẩn chạy y như cũ.
+- **Đánh đổi hồ sơ CORE (đã ghi trong tài liệu + log):** không đặt PasswordNeverExpires, không tự cài ứng dụng sau đăng nhập.
+- **Tài liệu:** docs/co_che_v0.7.21.md (mục 13 mới), TAI_LIEU_TEXT của wizard đồng bộ từng chữ (kiểm chứng bằng script trích xuất–so sánh), README_FULL §4.9 + bảng phiên bản, banner engine → v0.7.21.
+- Gói: `~/workspace/UtilityRebuild-v0.7.21.zip`; drop_v0.7.21 build mới **cả 11 exe** (qsu_common đổi nên mọi exe liên kết lại). Build release sạch (0 lỗi, 0 cảnh báo). **Chưa test trên máy thật** — ca test trên DESKTOP-704R89L: cài ảnh Tiny11 Core bằng wizard, nút Core BẬT — kỳ vọng hết vòng 0xEF, vào thẳng desktop Admin; gửi lại log cài đặt để đối chiếu dòng [Cơ chế] hồ sơ CORE.
+
 ## Khác biệt có chủ đích so với bản gốc
 
 - Không cổng key bản quyền, không biến môi trường "token" khóa module.

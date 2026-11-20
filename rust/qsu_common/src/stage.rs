@@ -100,6 +100,13 @@ pub struct StageConfig {
     /// Mật khẩu unattended UltraViewer — KHÔNG log
     pub ultraviewer_password: String,
     pub apply_tweaks: bool,
+    /// Hồ sơ ảnh cài đặt (v0.7.21): "standard" (mặc định; stage.json
+    /// cũ không có trường này vẫn hiểu là standard) hoặc "core" —
+    /// ảnh Windows rút gọn kiểu Tiny11 Core: unattend tối thiểu
+    /// không FirstLogonCommands, engine bỏ qua agent hậu cài và
+    /// thay bằng SetupComplete.cmd tối thiểu dọn cờ mật khẩu
+    /// (xem docs/co_che_v0.7.21.md).
+    pub image_profile: String,
     /// Danh sách ứng dụng hậu cài đầy đủ (url/hash/args) — nhúng tại đây
     /// vì trên Windows mới không còn settings.json của wizard
     pub apps: Vec<AppEntry>,
@@ -134,6 +141,7 @@ impl StageConfig {
             ("adminPassword", json::s(&self.admin_password)),
             ("ultraviewerPassword", json::s(&self.ultraviewer_password)),
             ("applyTweaks", json::b(self.apply_tweaks)),
+            ("imageProfile", json::s(&self.image_profile)),
             (
                 "apps",
                 Json::Arr(self.apps.iter().map(|a| a.to_json()).collect()),
@@ -179,6 +187,9 @@ impl StageConfig {
             admin_password: v.str_or("adminPassword", ""),
             ultraviewer_password: v.str_or("ultraviewerPassword", ""),
             apply_tweaks: v.bool_or("applyTweaks", false),
+            // stage.json cũ (trước v0.7.21) không có trường này →
+            // "standard", hành vi giữ nguyên.
+            image_profile: v.str_or("imageProfile", "standard"),
             apps,
             driver_backup_rel: v.str_or("driverBackupRel", "QSU-DriverBackup"),
             logs_folder: v.str_or("logsFolder", "QSU-Logs"),

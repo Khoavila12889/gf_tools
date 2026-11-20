@@ -591,7 +591,21 @@ fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_password: &str) -> String {
+// Hồ sơ CORE (v0.7.21, tham số `core_profile`): cho ảnh Windows
+// rút gọn kiểu Tiny11 Core — các ảnh này thiếu nhiều component mà
+// một unattend đầy đủ chạm tới, và thực địa cho thấy chúng boot
+// vòng lỗi 0xEF khi cài bằng pipeline chuẩn nhưng lên ngon khi
+// cài tay tối thiểu kiểu WinNTSetup. Khác biệt của hồ sơ CORE:
+// unattend KHÔNG mang <FirstLogonCommands> (không lệnh dọn cờ
+// mật khẩu, không lệnh hậu cài); cờ "phải đổi mật khẩu ở lần
+// đăng nhập đầu" của tài khoản admin được dọn bằng
+// SetupComplete.cmd tối thiểu do module ghi vào
+// Windows\Setup\Scripts của bản Windows mới (chạy bằng quyền
+// SYSTEM ở cuối pha setup, TRƯỚC lần đăng nhập đầu — nên
+// AutoLogon vẫn vào thẳng desktop). Phần còn lại của unattend
+// (locale, tên máy, OOBE rút gọn, LocalAccount, AutoLogon) giữ
+// nguyên như hồ sơ standard.
+fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_password: &str, core_profile: bool) -> String {
     let comp = xml_escape(computer_name);
     let user = xml_escape(admin_user);
     let pass = xml_escape(admin_password);
@@ -635,6 +649,18 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
         </SynchronousCommand>"#,
         user = user
     );
+    // Khối <FirstLogonCommands> hoàn chỉnh của hồ sơ standard
+    // (hai lệnh dọn cờ mật khẩu + lệnh hậu cài). Hồ sơ CORE: khối
+    // này VẮNG HẲN trong unattend — xem ghi chú đầu hàm.
+    let fl_block = if core_profile {
+        String::new()
+    } else {
+        format!(
+            "      <FirstLogonCommands>\n{flc}\n        <SynchronousCommand wcm:action=\"add\">\n          <Order>3</Order>\n          <CommandLine>{post}</CommandLine>\n          <Description>Tự cài UltraViewer, Chrome và 7-Zip sau khi vào Windows mới</Description>\n          <RequiresUserInput>false</RequiresUserInput>\n        </SynchronousCommand>\n      </FirstLogonCommands>\n",
+            flc = fl_commands,
+            post = xml_escape(qsu_common::post_install::FIRST_LOGON_COMMAND),
+        )
+    };
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
@@ -678,15 +704,7 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
         <Username>{user}</Username>{autologon_pw}
         <LogonCount>1</LogonCount>
       </AutoLogon>
-      <FirstLogonCommands>
-{flc}
-        <SynchronousCommand wcm:action="add">
-          <Order>3</Order>
-          <CommandLine>{post_command}</CommandLine>
-          <Description>Tự cài UltraViewer, Chrome và 7-Zip sau khi vào Windows mới</Description>
-          <RequiresUserInput>false</RequiresUserInput>
-        </SynchronousCommand>
-      </FirstLogonCommands>
+{fl_block}
     </component>
   </settings>
 </unattend>
@@ -697,8 +715,7 @@ fn build_unattend(st: &Settings, computer_name: &str, admin_user: &str, admin_pa
         tz = xml_escape(&st.timezone),
         comp = comp,
         user = user,
-        flc = fl_commands,
-        post_command = xml_escape(qsu_common::post_install::FIRST_LOGON_COMMAND),
+        fl_block = fl_block,
     )
 }
 
@@ -1024,6 +1041,9 @@ struct InstallPlan {
     /// và log nói rõ trạng thái; mật khẩu KHÔNG nằm trong plan.
     admin_user: String,
     admin_passwordless: bool,
+    /// Hồ sơ CORE cho ảnh rút gọn (v0.7.21): bước thực thi bỏ qua
+    /// agent hậu cài, ghi SetupComplete.cmd tối thiểu thay thế.
+    core_profile: bool,
     custom_dir: Option<PathBuf>,
     log_dir: PathBuf,
     uefi: bool,
@@ -1279,15 +1299,47 @@ fn spawn_install(shared: SharedRef, sender: nwg::NoticeSender, plan: InstallPlan
 
         // --- Bước 4: autounattend vào Windows\Panther ---
         if let Some(xml) = &plan.unattend_xml {
-            if let Err(e) = qsu_common::post_install::write_to_windows(Path::new(&target_root)) {
-                done(&shared, &sender, fail("Chuẩn bị tự cài ứng dụng", e.to_string()));
-                return;
-            }
-            log.line("Đã chuẩn bị tự cài UltraViewer, Chrome và 7-Zip ở lần đăng nhập đầu.");
-            let notify_dir = Path::new(&target_root).join("ProgramData").join("QSU");
-            if let Err(e) = qsu_common::post_install::copy_host_telegram_config(&notify_dir) {
-                done(&shared, &sender, fail("Cấu hình Telegram", e.to_string()));
-                return;
+            if plan.core_profile {
+                // Hồ sơ CORE (v0.7.21): bỏ qua agent hậu cài; ghi
+                // SetupComplete.cmd tối thiểu — một lệnh net user
+                // dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu",
+                // chạy bằng quyền SYSTEM ở cuối pha setup, trước
+                // lần đăng nhập đầu tiên.
+                let scripts = Path::new(&target_root).join("Windows").join("Setup").join("Scripts");
+                let sc_line = format!("net user {} /logonpasswordchg:no", plan.admin_user);
+                let sc_res = std::fs::create_dir_all(&scripts).and_then(|_| {
+                    let sc = scripts.join("SetupComplete.cmd");
+                    if sc.exists() {
+                        // Ảnh đã có sẵn SetupComplete.cmd (từ bộ
+                        // tuỳ biến): nối thêm dòng của mình, KHÔNG
+                        // ghi đè nội dung sẵn có của ảnh.
+                        let mut cur = std::fs::read_to_string(&sc).unwrap_or_default();
+                        if !cur.ends_with('\n') {
+                            cur.push_str("\r\n");
+                        }
+                        cur.push_str(&sc_line);
+                        cur.push_str("\r\n");
+                        std::fs::write(&sc, cur)
+                    } else {
+                        std::fs::write(&sc, format!("@echo off\r\n{}\r\n", sc_line))
+                    }
+                });
+                if let Err(e) = sc_res {
+                    done(&shared, &sender, fail("Ghi SetupComplete.cmd", e.to_string()));
+                    return;
+                }
+                log.line("Hồ sơ CORE: đã ghi SetupComplete.cmd tối thiểu (dọn cờ đổi mật khẩu), bỏ qua agent hậu cài.");
+            } else {
+                if let Err(e) = qsu_common::post_install::write_to_windows(Path::new(&target_root)) {
+                    done(&shared, &sender, fail("Chuẩn bị tự cài ứng dụng", e.to_string()));
+                    return;
+                }
+                log.line("Đã chuẩn bị tự cài UltraViewer, Chrome và 7-Zip ở lần đăng nhập đầu.");
+                let notify_dir = Path::new(&target_root).join("ProgramData").join("QSU");
+                if let Err(e) = qsu_common::post_install::copy_host_telegram_config(&notify_dir) {
+                    done(&shared, &sender, fail("Cấu hình Telegram", e.to_string()));
+                    return;
+                }
             }
             set_progress(&shared, &sender, 90, "Đang ghi autounattend.xml...");
             let panther = Path::new(&target_root).join("Windows").join("Panther");
@@ -1298,8 +1350,12 @@ fn spawn_install(shared: SharedRef, sender: nwg::NoticeSender, plan: InstallPlan
             match write_res {
                 Ok(_) => {
                     log.line("Đã ghi autounattend.xml + unattend.xml vào Windows\\Panther.");
+                    if plan.core_profile {
+                        log.line("[Cơ chế] Hồ sơ CORE (v0.7.21): autounattend.xml KHÔNG mang FirstLogonCommands; cờ 'phải đổi mật khẩu ở lần đăng nhập đầu' của tài khoản admin được dọn bằng SetupComplete.cmd (net user <tên> /logonpasswordchg:no) chạy bằng quyền SYSTEM ở cuối pha setup, trước lần đăng nhập đầu — AutoLogon vẫn vào thẳng desktop. Hồ sơ này dành cho ảnh rút gọn kiểu Tiny11 Core.");
+                    } else {
                     // [Cơ chế] (v0.7.19): dọn cờ "phải đổi mật khẩu ở lần đăng nhập đầu" của tài khoản admin.
                     log.line("[Cơ chế] autounattend.xml mang hai lệnh FirstLogonCommands cho tài khoản admin — `net user <tên> /logonpasswordchg:no` và đặt PasswordNeverExpires: tài khoản Setup tạo từ unattend mang cờ phải đổi mật khẩu ở lần đăng nhập đầu (pwdLastSet=0), không dọn cờ thì AutoLogon bị chặn ở màn hình đổi mật khẩu thay vì vào thẳng desktop (thực địa 2026-11-18). Áp dụng cả khi mật khẩu để trống lẫn khi có đặt.");
+                    }
                 }
                 Err(e) => {
                     done(&shared, &sender, fail("Ghi autounattend.xml", e.to_string()));
@@ -1433,6 +1489,7 @@ struct App {
     inp_driver: nwg::TextInput,
     btn_browse_driver: nwg::Button,
     chk_unattend: nwg::CheckBox,
+    chk_core: nwg::CheckBox,
     inp_computer: nwg::TextInput,
     inp_user: nwg::TextInput,
     inp_pw1: nwg::TextInput,
@@ -1662,6 +1719,19 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         .expect("checkbox");
     chk_unattend.set_position(16, 618);
     chk_unattend.set_size(810, 24);
+    // Ô chọn hồ sơ CORE cho ảnh rút gọn (v0.7.21) — đặt ở dải
+    // trống giữa hàng xác nhận serial và thanh tiến trình, không
+    // xô lệch bố cục hiện có. Chỉ có nghĩa khi ô autounattend ở
+    // trên được tick.
+    let mut chk_core = Default::default();
+    nwg::CheckBox::builder()
+        .text("Ảnh rút gọn (Tiny11 Core): profile tối thiểu — không lệnh chạy thêm ở lần đăng nhập đầu, dọn cờ mật khẩu bằng SetupComplete.cmd")
+        .font(Some(f_normal))
+        .parent(&window)
+        .build(&mut chk_core)
+        .expect("checkbox");
+    chk_core.set_position(16, 749);
+    chk_core.set_size(810, 22);
     let lbl_comp_cap = add_label!("Tên máy tính:", f_normal, (16, 650), (110, 22));
     let inp_computer = add_input!((130, 648), (200, 26));
     inp_computer.set_text("QSU-PC");
@@ -1804,6 +1874,7 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         inp_driver,
         btn_browse_driver,
         chk_unattend,
+        chk_core,
         inp_computer,
         inp_user,
         inp_pw1,
@@ -1877,6 +1948,7 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         app.inp_driver.handle.clone(),
         app.btn_browse_driver.handle.clone(),
         app.chk_unattend.handle.clone(),
+        app.chk_core.handle.clone(),
         lbl_comp_cap.handle.clone(),
         app.inp_computer.handle.clone(),
         lbl_user_cap.handle.clone(),
@@ -2536,6 +2608,7 @@ fn build_plan(app: &Rc<App>, _for_format_confirm: bool) -> Option<InstallPlan> {
     // được mang sang InstallPlan, chỉ trạng thái có/không)
     let mut unattend_user = String::new();
     let mut unattend_passwordless = false;
+    let mut core_profile = false;
     let unattend_xml = if app.chk_unattend.check_state() == nwg::CheckBoxState::Checked {
         let computer = app.inp_computer.text().trim().to_string();
         let user = app.inp_user.text().trim().to_string();
@@ -2559,8 +2632,9 @@ fn build_plan(app: &Rc<App>, _for_format_confirm: bool) -> Option<InstallPlan> {
         }
         unattend_user = user.clone();
         unattend_passwordless = pw1.is_empty();
+        core_profile = app.chk_core.check_state() == nwg::CheckBoxState::Checked;
         let m = app.model.borrow();
-        Some(build_unattend(&m.settings, &computer, &user, &pw1))
+        Some(build_unattend(&m.settings, &computer, &user, &pw1, core_profile))
     } else {
         None
     };
@@ -2623,6 +2697,7 @@ fn build_plan(app: &Rc<App>, _for_format_confirm: bool) -> Option<InstallPlan> {
         unattend_xml,
         admin_user: unattend_user,
         admin_passwordless: unattend_passwordless,
+        core_profile,
         custom_dir,
         log_dir,
         uefi,
@@ -2651,7 +2726,11 @@ fn confirm_install(plan: &InstallPlan) -> bool {
         String::new()
     };
     let account_line = if plan.unattend_xml.is_some() {
-        format!("{}• Tự cài UltraViewer, Chrome, 7-Zip sau đăng nhập (cần Internet).\n", account_line)
+        if plan.core_profile {
+            format!("{}• Hồ sơ CORE (ảnh rút gọn Tiny11 Core): profile tối thiểu, KHÔNG tự cài ứng dụng sau đăng nhập.\n", account_line)
+        } else {
+            format!("{}• Tự cài UltraViewer, Chrome, 7-Zip sau đăng nhập (cần Internet).\n", account_line)
+        }
     } else { account_line };
     if let Some(w) = &plan.wipe {
         let text = format!(
