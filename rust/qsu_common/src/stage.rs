@@ -10,6 +10,14 @@
 //! `adminPassword` khỏi JSON trước khi ghi (bản rebuild không có agent
 //! hậu cài). Mật khẩu admin chỉ nằm trong autounattend.xml (bắt buộc
 //! cho AutoLogon) và không bao giờ được ghi vào log.
+//!
+//! Ngoại lệ CÓ CHỦ ĐÍCH duy nhất (v0.7.27): `notify_once_token` —
+//! token DÙNG MỘT LẦN do relay Zalo cấp cho wizard lúc staging
+//! (hết hạn ≤ 12 giờ, tối đa 3 tin) để engine trong WinPE gửi tin
+//! CÀI XONG / LỖI mà không cần giữ bí mật dài hạn nào. Đây KHÔNG
+//! PHẢI secret dài hạn: secret dài hạn của relay và Bot Token
+//! Telegram chỉ nằm trong settings.json cạnh wizard, TUYỆT ĐỐI
+//! không vào stage.json.
 
 use std::path::Path;
 
@@ -116,6 +124,14 @@ pub struct StageConfig {
     pub driver_backup_rel: String,
     pub logs_folder: String,
     pub staging_folder: String,
+    /// Thông báo trạng thái qua relay Zalo (v0.7.27): địa chỉ
+    /// relay + TOKEN DÙNG MỘT LẦN wizard xin từ relay ngay lúc
+    /// staging (xem ghi chú bảo mật đầu file). Engine dùng cặp
+    /// này để gửi đúng tin kết thúc (CÀI XONG / LỖI) qua
+    /// /notify-once. Rỗng ở một trong hai = tắt (mặc định; mọi
+    /// stage.json cũ đều rỗng hai trường này).
+    pub notify_relay_url: String,
+    pub notify_once_token: String,
 }
 
 impl StageConfig {
@@ -151,6 +167,8 @@ impl StageConfig {
             ("driverBackupRel", json::s(&self.driver_backup_rel)),
             ("logsFolder", json::s(&self.logs_folder)),
             ("stagingFolder", json::s(&self.staging_folder)),
+            ("notifyRelayUrl", json::s(&self.notify_relay_url)),
+            ("notifyOnceToken", json::s(&self.notify_once_token)),
         ])
     }
 
@@ -196,6 +214,10 @@ impl StageConfig {
             driver_backup_rel: v.str_or("driverBackupRel", "QSU-DriverBackup"),
             logs_folder: v.str_or("logsFolder", "QSU-Logs"),
             staging_folder: v.str_or("stagingFolder", "QSU-Stage"),
+            // stage.json cũ (trước v0.7.27) không có hai khoá
+            // này → rỗng = engine không gửi tin kết thúc.
+            notify_relay_url: v.str_or("notifyRelayUrl", ""),
+            notify_once_token: v.str_or("notifyOnceToken", ""),
         }
     }
 

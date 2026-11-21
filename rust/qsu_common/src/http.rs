@@ -187,6 +187,82 @@ pub fn get_bytes(url: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// POST một thân JSON qua WinHTTP (v0.7.27 — dùng cho thông báo
+/// trạng thái cài đặt: Telegram Bot API + relay Zalo). Khác đường
+/// tải file ở trên: timeout cấu hình được cả bốn pha (resolve /
+/// connect / send / receive đều = `timeout_ms`, 0 = mặc định
+/// 30 giây) để nơi gọi cần phản hồi nhanh (thông báo best-effort)
+/// không bị treo lâu. Trả (HTTP status, toàn bộ thân phản hồi);
+/// status khác 200 KHÔNG phải lỗi ở tầng này — nơi gọi tự phán
+/// theo API của đích (Telegram/relay đều trả JSON kèm mô tả lỗi).
+pub fn post_json(url: &str, body: &str, timeout_ms: u32) -> Result<(u32, Vec<u8>), String> {
+    let u = parse_url(url)?;
+    let session = open_session()?;
+    let t = if timeout_ms == 0 {
+        30_000
+    } else {
+        timeout_ms.min(120_000) as i32
+    };
+    unsafe {
+        WinHttpSetTimeouts(session.0, t, t, t, t);
+        let host = wide(&u.host);
+        let conn = WinHttpConnect(session.0, host.as_ptr(), u.port as u32 as _, 0);
+        if conn.is_null() {
+            return Err(format!("WinHttpConnect tới {} thất bại", u.host));
+        }
+        let conn = Session(conn);
+        let verb = wide("POST");
+        let path = wide(&u.path);
+        let flags = if u.secure { WINHTTP_FLAG_SECURE } else { 0 };
+        let req = WinHttpOpenRequest(
+            conn.0,
+            verb.as_ptr(),
+            path.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null_mut(),
+            flags,
+        );
+        if req.is_null() {
+            return Err("WinHttpOpenRequest thất bại".to_string());
+        }
+        let req = Session(req);
+        let headers = wide("Content-Type: application/json\r\n");
+        let bytes = body.as_bytes();
+        let ok = WinHttpSendRequest(
+            req.0,
+            headers.as_ptr(),
+            u32::MAX, // (DWORD)-1: chuỗi kết thúc NUL
+            bytes.as_ptr() as *mut c_void,
+            bytes.len() as u32,
+            bytes.len() as u32,
+            0,
+        );
+        if ok == 0 {
+            return Err("WinHttpSendRequest thất bại".to_string());
+        }
+        if WinHttpReceiveResponse(req.0, ptr::null_mut()) == 0 {
+            return Err("WinHttpReceiveResponse thất bại".to_string());
+        }
+        let mut status: u32 = 0;
+        let mut len: u32 = std::mem::size_of::<u32>() as u32;
+        WinHttpQueryHeaders(
+            req.0,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            ptr::null(),
+            &mut status as *mut u32 as *mut c_void,
+            &mut len,
+            ptr::null_mut(),
+        );
+        let mut out = Vec::new();
+        read_all(req.0, &mut |chunk| {
+            out.extend_from_slice(chunk);
+            Ok(())
+        })?;
+        Ok((status, out))
+    }
+}
+
 fn read_all<F: FnMut(&[u8]) -> Result<(), String>>(req: HINTERNET, sink: &mut F) -> Result<(), String> {
     unsafe {
         let mut buf = vec![0u8; 64 * 1024];

@@ -173,6 +173,18 @@ struct EditionInfo {
     size_bytes: u64,
 }
 
+/// Kết quả một thao tác mạng của tab "Thông báo" (v0.7.27) —
+/// luồng nền ghi vào `Shared::notify_done`, `refresh` đọc ra để
+/// nhả khoá nút + hiện kết quả. Không biến thể nào mang theo
+/// token/secret (kể cả trong thông điệp lỗi — `qsu_common::notify`
+/// đã lọc Bot Token khỏi lỗi trước khi trả).
+enum NotifyDone {
+    /// "Lấy Chat ID": Ok((chat_id, tên người gửi / nhóm))
+    ChatId(Result<(String, String), String>),
+    /// "Gửi thử ...": kèm tên kênh để hiện đúng dòng trạng thái
+    Test(&'static str, Result<(), String>),
+}
+
 // ---------------------------------------------------------------------------
 // Trạng thái dùng chung luồng nền -> giao diện (qua NWG Notice)
 // ---------------------------------------------------------------------------
@@ -188,6 +200,7 @@ struct Shared {
     exec_progress: Option<(u32, String)>,
     exec_msg: Option<String>,
     exec_done: Option<Result<String, String>>,
+    notify_done: Option<NotifyDone>,
 }
 
 type SharedRef = Arc<Mutex<Shared>>;
@@ -689,6 +702,68 @@ fn spawn_catalogue_fetch(shared: SharedRef, sender: nwg::NoticeSender, url: Stri
             Ok(out)
         })();
         shared.lock().unwrap().catalogue = Some(result);
+        sender.notice();
+    });
+}
+
+/// Luồng nền "Lấy Chat ID" của tab "Thông báo" (v0.7.27): bọc
+/// `catch_unwind` và LUÔN ghi kết quả vào `Shared::notify_done`
+/// (kể cả khi panic) để `refresh` nhả khoá bốn nút của tab ở mọi
+/// lối ra — xem `NotifyDone`.
+fn spawn_notify_fetch_chat_id(shared: SharedRef, sender: nwg::NoticeSender, token: String) {
+    std::thread::spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            qsu_common::notify::telegram_fetch_chat_id(&token)
+        }));
+        let result = match result {
+            Ok(r) => r,
+            Err(p) => Err(format!("lỗi nội bộ: {}", panic_payload_text(&*p))),
+        };
+        lock_shared(&shared).notify_done = Some(NotifyDone::ChatId(result));
+        sender.notice();
+    });
+}
+
+/// Luồng nền "Gửi thử Telegram" (v0.7.27) — cùng kỷ luật khoá
+/// nút như `spawn_notify_fetch_chat_id`.
+fn spawn_notify_test_telegram(
+    shared: SharedRef,
+    sender: nwg::NoticeSender,
+    token: String,
+    chat_id: String,
+) {
+    std::thread::spawn(move || {
+        let text = qsu_common::notify::text_test(&sys::computer_name());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            qsu_common::notify::telegram_send(&token, &chat_id, &text)
+        }));
+        let result = match result {
+            Ok(r) => r,
+            Err(p) => Err(format!("lỗi nội bộ: {}", panic_payload_text(&*p))),
+        };
+        lock_shared(&shared).notify_done = Some(NotifyDone::Test("Telegram", result));
+        sender.notice();
+    });
+}
+
+/// Luồng nền "Gửi thử Zalo" qua relay (v0.7.27) — cùng kỷ luật
+/// khoá nút như `spawn_notify_fetch_chat_id`.
+fn spawn_notify_test_zalo(
+    shared: SharedRef,
+    sender: nwg::NoticeSender,
+    url: String,
+    secret: String,
+) {
+    std::thread::spawn(move || {
+        let text = qsu_common::notify::text_test(&sys::computer_name());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            qsu_common::notify::relay_send(&url, &secret, &text)
+        }));
+        let result = match result {
+            Ok(r) => r,
+            Err(p) => Err(format!("lỗi nội bộ: {}", panic_payload_text(&*p))),
+        };
+        lock_shared(&shared).notify_done = Some(NotifyDone::Test("Zalo", result));
         sender.notice();
     });
 }
@@ -3268,6 +3343,36 @@ fn exec_clean(
     // adminPassword khỏi file ghi ra (bản rebuild không có agent hậu
     // cài; mật khẩu chỉ nằm trong autounattend.xml).
     set_exec_progress(shared, sender, 92, "Ghi stage.json...");
+    // --- Thông báo trạng thái (v0.7.27): nếu bật thông báo và
+    // đã cấu hình relay Zalo, xin TOKEN DÙNG MỘT LẦN từ relay để
+    // engine trong WinPE gửi tin CÀI XONG / LỖI (stage.json chỉ
+    // mang token một lần này — secret dài hạn KHÔNG vào
+    // stage.json; xem ghi chú bảo mật trong stage.rs). Xin token
+    // lỗi thì bỏ qua thông báo, KHÔNG chặn ca cài.
+    let mut notify_relay_url = String::new();
+    let mut notify_once_token = String::new();
+    if settings.notify_enabled
+        && !settings.zalo_relay_url.trim().is_empty()
+        && !settings.zalo_relay_secret.trim().is_empty()
+    {
+        match qsu_common::notify::relay_register(
+            settings.zalo_relay_url.trim(),
+            settings.zalo_relay_secret.trim(),
+            &plan.computer_name,
+        ) {
+            Ok(tok) => {
+                notify_relay_url = settings.zalo_relay_url.trim().to_string();
+                notify_once_token = tok;
+                log.line("[Cơ chế] Thông báo (v0.7.27): đã xin token dùng một lần từ relay Zalo — engine trong WinPE sẽ gửi tin CÀI XONG / LỖI qua relay (best-effort, cần mạng tới server).");
+            }
+            Err(e) => {
+                log.line(&format!(
+                    "CẢNH BÁO: không xin được token thông báo từ relay Zalo ({}). Ca cài vẫn tiếp tục; tin CÀI XONG / LỖI sẽ không được gửi.",
+                    e
+                ));
+            }
+        }
+    }
     let cfg = StageConfig {
         version: 1,
         mode: "clean".to_string(),
@@ -3301,6 +3406,8 @@ fn exec_clean(
         driver_backup_rel: DRIVER_BACKUP_FOLDER.to_string(),
         logs_folder: settings.logs_folder.clone(),
         staging_folder: settings.staging_folder.clone(),
+        notify_relay_url,
+        notify_once_token,
     };
     let mut stage_json = cfg.to_json();
     if let Json::Obj(ref mut m) = stage_json {
@@ -3332,6 +3439,61 @@ fn exec_clean(
 
     set_exec_progress(shared, sender, 100, "Staging hoàn tất.");
     log.line("=== Staging cài mới hoàn tất — sẵn sàng reboot vào WinPE ===");
+    // --- Gửi tin BẮT ĐẦU (v0.7.27): wizard còn ở Windows (mạng
+    // đầy đủ) nên gửi qua CẢ HAI kênh đã cấu hình ngay tại đây;
+    // tin CÀI XONG / LỖI do engine gửi qua relay bằng token dùng
+    // một lần trong stage.json. Gửi lỗi chỉ ghi cảnh báo — không
+    // đổi kết quả staging, không chặn reboot.
+    if settings.notify_enabled {
+        let mode_desc = format!(
+            "{}{}",
+            match plan.part_mode {
+                PartMode::Preserve => "Cài mới — giữ nguyên phân vùng",
+                PartMode::WipeDisk => "Cài mới — xoá toàn bộ đĩa đích, chia lại",
+                PartMode::Rebuild => "Cài mới — chia lại các phân vùng hệ thống đã chọn",
+            },
+            if plan.core_profile {
+                " — hồ sơ CORE (ảnh rút gọn)"
+            } else {
+                ""
+            }
+        );
+        let start_text = qsu_common::notify::text_start(
+            &plan.computer_name,
+            &plan.edition.name,
+            &mode_desc,
+        );
+        if !settings.telegram_bot_token.trim().is_empty()
+            && !settings.telegram_chat_id.trim().is_empty()
+        {
+            match qsu_common::notify::telegram_send(
+                settings.telegram_bot_token.trim(),
+                settings.telegram_chat_id.trim(),
+                &start_text,
+            ) {
+                Ok(()) => log.line("Đã gửi thông báo BẮT ĐẦU qua Telegram."),
+                Err(e) => log.line(&format!(
+                    "CẢNH BÁO: gửi thông báo BẮT ĐẦU qua Telegram thất bại: {}",
+                    e
+                )),
+            }
+        }
+        if !settings.zalo_relay_url.trim().is_empty()
+            && !settings.zalo_relay_secret.trim().is_empty()
+        {
+            match qsu_common::notify::relay_send(
+                settings.zalo_relay_url.trim(),
+                settings.zalo_relay_secret.trim(),
+                &start_text,
+            ) {
+                Ok(()) => log.line("Đã gửi thông báo BẮT ĐẦU qua Zalo (relay)."),
+                Err(e) => log.line(&format!(
+                    "CẢNH BÁO: gửi thông báo BẮT ĐẦU qua Zalo (relay) thất bại: {}",
+                    e
+                )),
+            }
+        }
+    }
     lock_shared(shared).exec_done = Some(Ok(
         "Đã staging xong. Khởi động lại máy để boot vào WinPE và tự động cài Windows mới (không cần thao tác thêm).".to_string(),
     ));
@@ -3407,8 +3569,10 @@ NẾU WINPE KHÔNG LÊN ĐƯỢC
 /// tiến trình hai bề mặt trong WinPE của v0.7.18 + chốt boot
 /// cùng đĩa cho đường preserve, module WinPE tự mount ISO /
 /// trình duyệt file tích hợp / chống kẹt nút, và dọn cờ đổi
-/// mật khẩu trong autounattend của v0.7.19). Bản sao dạng
-/// markdown: docs/co_che_v0.7.19.md.
+/// mật khẩu trong autounattend của v0.7.19; các mục sau v0.7.19
+/// xem file markdown — mới nhất là thông báo trạng thái cài
+/// đặt qua Telegram / Zalo relay của v0.7.27, mục 19). Bản sao
+/// dạng markdown: docs/co_che_v0.7.27.md.
 const TAI_LIEU_TEXT: &str = r#"TÀI LIỆU CƠ CHẾ — CÀI MỚI QUA WINPE (cơ chế của bản build hiện tại)
 
 Tài liệu này mô tả đúng những gì wizard thực thi khi chọn "Cài mới từ xa (qua WinPE)". Quá trình gồm hai giai đoạn: chuẩn bị (staging) chạy trong Windows hiện tại bằng wizard này, và cài thật chạy trong WinPE bằng engine WinPEInstall.exe.
@@ -3507,7 +3671,17 @@ Vì sao cơ chế này an toàn để đưa lại: nó từng bị loại ở v0
 Phạm vi thay đổi của v0.7.26 chỉ nằm ở hồ sơ CORE:
 - Hồ sơ STANDARD không đổi: cờ mật khẩu vẫn được dọn bằng hai lệnh FirstLogonCommands trong unattend đầy đủ như trước.
 - Hồ sơ CORE vẫn giữ: unattend chỉ pha oobeSystem, không inject driver, không chép WinRE, không agent hậu cài, không FirstLogonCommands — chỉ thêm file SetupComplete.cmd tối thiểu nói trên. Log của engine/module có dòng "[Cơ chế] Hồ sơ CORE (v0.7.26): đã ghi SetupComplete.cmd tối thiểu ..." để đối chiếu khi nghiệm thu.
-- Đánh đổi "có thể gặp màn hình đổi mật khẩu ở lần đăng nhập đầu" ở mục 15 nay ĐÃ HẾT: ca cài CORE từ v0.7.26 vào thẳng desktop bằng AutoLogon. Các đánh đổi còn lại của mục 15 (không đặt trước tên máy và múi giờ) giữ nguyên."#;
+- Đánh đổi "có thể gặp màn hình đổi mật khẩu ở lần đăng nhập đầu" ở mục 15 nay ĐÃ HẾT: ca cài CORE từ v0.7.26 vào thẳng desktop bằng AutoLogon. Các đánh đổi còn lại của mục 15 (không đặt trước tên máy và múi giờ) giữ nguyên.
+
+19. THÔNG BÁO TRẠNG THÁI CÀI ĐẶT QUA TELEGRAM / ZALO RELAY (v0.7.27)
+
+Từ v0.7.27 wizard có thêm tab "Thông báo": kỹ thuật viên bật thông báo và cấu hình một hoặc cả hai kênh để nhận trạng thái ca cài trên điện thoại, không phải ngồi canh máy:
+- Kênh Telegram: bot Telegram của CHÍNH kỹ thuật viên (tạo qua @BotFather trên Telegram). Tab có nút "Lấy Chat ID" — kỹ thuật viên nhắn trước một tin bất kỳ cho bot của mình, wizard đọc getUpdates của Bot API và tự điền Chat ID kèm tên người gửi — và nút "Gửi thử Telegram". Bot Token và Chat ID chỉ lưu trong settings.json cạnh wizard.
+- Kênh Zalo qua relay Golden Farm: một relay nhỏ chạy trên chính server của đơn vị (cạnh bot Zalo Golden Farm) nhận trạng thái rồi chuyển tiếp vào Zalo của kỹ thuật viên. Wizard và engine chỉ POST về địa chỉ relay kèm khoá bí mật (Relay URL + Relay Secret khai trong tab); bộ công cụ không đăng nhập Zalo và không giữ phiên Zalo nào.
+- Tin BẮT ĐẦU do wizard gửi ngay khi staging hoàn tất — máy còn ở Windows hiện tại, mạng đầy đủ — qua cả hai kênh đã cấu hình. Tin CÀI XONG / LỖI do engine trong WinPE gửi và CHỈ đi qua kênh Zalo relay: ngay lúc staging, wizard dùng Relay Secret xin trước một TOKEN DÙNG MỘT LẦN từ relay (hết hạn tối đa 12 giờ, tối đa 3 tin) và ghi token đó vào stage.json; engine dùng token để gửi đúng tin kết thúc của ca. Relay Secret dài hạn và Bot Token Telegram KHÔNG BAO GIỜ vào stage.json hay file log.
+- Nội dung mọi tin chỉ gồm: loại trạng thái (bắt đầu / cài xong / lỗi kèm bước dừng), tên máy và thời gian. Không gửi bất kỳ thông tin đăng nhập nào — không mật khẩu, không ID/mật khẩu công cụ điều khiển từ xa.
+- Mọi lần gửi đều là best-effort với timeout ngắn (8 giây): gửi lỗi chỉ ghi CẢNH BÁO vào log, không chặn ca cài, không đổi mã thoát của engine, không chặn reboot hay màn hình giữ lỗi. Trong WinPE tin chỉ đi được khi WinPE có driver mạng và với tới được địa chỉ relay (cùng LAN / Tailscale); không có mạng thì ca cài vẫn chạy bình thường, chỉ thiếu tin kết thúc.
+- Nút "Lưu cấu hình thông báo" ghi 5 khoá (notifyEnabled, telegramBotToken, telegramChatId, zaloRelayUrl, zaloRelaySecret) vào settings.json tại đúng vị trí khoá, giữ nguyên các khoá khác, đồng thời cập nhật bản cấu hình trong bộ nhớ để ca staging bắt đầu ngay sau đó dùng đúng giá trị vừa lưu."#;
 
 // ---------------------------------------------------------------------------
 // Trạng thái giao diện (luồng UI) + dựng cửa sổ
@@ -3572,6 +3746,10 @@ const GROUP_TAB2: u8 = 2;
 /// số co giãn dùng chung không cần thêm chỉ số mới.
 const GROUP_TAB3: u8 = 3;
 const GROUP_TAB4: u8 = 4;
+/// Sân tab 5 "Thông báo" (v0.7.27): trang cấu hình thông báo
+/// trạng thái — mọi control đều chiều cao cố định (không phần
+/// tử co giãn), `apply_layout` chỉ dịch/nở theo bề ngang.
+const GROUP_TAB5: u8 = 5;
 /// Kích thước ngoài tối thiểu của cửa sổ (áp qua WM_GETMINMAXINFO):
 /// dưới mức này các control bắt đầu thiếu chỗ thực sự.
 const MIN_WINDOW_W: i32 = 900;
@@ -3651,6 +3829,10 @@ struct Model {
     /// Hồ sơ CORE cho ảnh Windows rút gọn (Tiny11 Core) — v0.7.21:
     /// unattend tối thiểu, xem `build_unattend`.
     core_profile: bool,
+    /// Tab "Thông báo" (v0.7.27): đang có thao tác mạng chạy nền
+    /// (lấy Chat ID / gửi thử) — bốn nút của tab bị khoá cho tới
+    /// khi `refresh` nhận kết quả qua `Shared::notify_done`.
+    notify_busy: bool,
     busy_ed: bool,
     running: bool,
     last_clean: bool,
@@ -3678,7 +3860,8 @@ struct Model {
 struct App {
     notice: nwg::Notice,
     /// Khung tab + các trang (2 trang biểu mẫu ở v0.7.10, cộng 2
-    /// trang tài liệu ở v0.7.12). Giữ trong App để handle sống
+    /// trang tài liệu ở v0.7.12, cộng trang "Thông báo" ở
+    /// v0.7.27). Giữ trong App để handle sống
     /// cùng tiến trình như mọi control khác; NWG tự hiện/ẩn trang
     /// theo lựa chọn của người dùng và tự khớp kích thước trang khi
     /// khung đổi kích thước. `tabs`/`tab_opt` chỉ giữ quyền sở hữu
@@ -3693,6 +3876,9 @@ struct App {
     /// `layout_window` để đo kích thước trang như `tab_src`.
     tab_guide: nwg::Tab,
     tab_docs: nwg::Tab,
+    /// Trang "Thông báo" (v0.7.27) — được đọc trong
+    /// `layout_window` như hai trang tài liệu.
+    tab_notify: nwg::Tab,
     l_os: nwg::Label,
     l_boot: nwg::Label,
     l_data_info: nwg::Label,
@@ -3750,6 +3936,19 @@ struct App {
     btn_core: nwg::Button,
     btn_start: nwg::Button,
     btn_close: nwg::Button,
+    /// Tab "Thông báo" (v0.7.27): ô bật thông báo, hai nhóm cấu
+    /// hình kênh (Telegram trực tiếp / Zalo qua relay), các nút
+    /// thao tác mạng và dòng trạng thái của tab.
+    chk_notify: nwg::CheckBox,
+    inp_tg_token: nwg::TextInput,
+    inp_tg_chat: nwg::TextInput,
+    inp_zalo_url: nwg::TextInput,
+    inp_zalo_secret: nwg::TextInput,
+    btn_tg_fetch: nwg::Button,
+    btn_tg_test: nwg::Button,
+    btn_zalo_test: nwg::Button,
+    btn_notify_save: nwg::Button,
+    lbl_notify_status: nwg::Label,
     model: RefCell<Model>,
     shared: SharedRef,
 }
@@ -3822,6 +4021,8 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
     // cho mọi trang như nhau (EnumChildWindows trên WM_SIZE của
     // khung), nên hai trang mới không cần xử lý riêng nào khác
     // ngoài đăng ký vào bảng bố cục (sân GROUP_TAB3 / GROUP_TAB4).
+    // v0.7.27: thêm trang THỨ NĂM "Thông báo" (sân GROUP_TAB5) —
+    // cùng cơ chế, không xử lý riêng nào khác.
     let mut tabs = Default::default();
     nwg::TabsContainer::builder()
         .font(Some(font_normal))
@@ -3841,6 +4042,10 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
     nwg::Tab::builder().text("Hướng dẫn").parent(&tabs).build(&mut tab_guide).expect("tab");
     let mut tab_docs = Default::default();
     nwg::Tab::builder().text("Tài liệu").parent(&tabs).build(&mut tab_docs).expect("tab");
+    // v0.7.27: trang "Thông báo" — trang biểu mẫu thứ ba, nối sau
+    // "Tài liệu" đúng thứ tự tạo.
+    let mut tab_notify = Default::default();
+    nwg::Tab::builder().text("Thông báo").parent(&tabs).build(&mut tab_notify).expect("tab");
     // Ép NWG khớp lại hai trang theo đúng kích thước khung thiết kế
     // (qua hàm xử lý WM_SIZE nội bộ của TabsContainer — SetWindowPos
     // gửi WM_SIZE đồng bộ) rồi đo client của trang: đó là mốc thiết
@@ -3890,6 +4095,84 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
     txt_docs.set_position(8, 6);
     txt_docs.set_size(961, 466);
     set_edit_style(txt_docs.handle.hwnd(), ES_READONLY);
+
+    // --- Tab 5 "Thông báo" (v0.7.27): cấu hình thông báo trạng
+    // thái cài đặt qua hai kênh của chính kỹ thuật viên — bot
+    // Telegram của họ và relay Zalo Golden Farm trên server của
+    // đơn vị. Giá trị khởi tạo từ settings được điền SAU khi App
+    // dựng xong (settings nạp ở cuối build_ui, như nút Core).
+    // Token/secret dùng ô nhập che ký tự (ES_PASSWORD) như ô mật
+    // khẩu ở tab 2; chúng chỉ lưu trong settings.json cạnh
+    // wizard, không vào log, không vào stage.json.
+    let _s5 = add_label!(&tab_notify, "5 — THÔNG BÁO TRẠNG THÁI CÀI ĐẶT", font_section, (8, 6), (560, 24));
+    let mut chk_notify = Default::default();
+    nwg::CheckBox::builder()
+        .text("Bật thông báo trạng thái cài đặt (bắt đầu / cài xong / lỗi, kèm tên máy)")
+        .font(Some(font_normal))
+        .parent(&tab_notify)
+        .build(&mut chk_notify)
+        .expect("checkbox");
+    chk_notify.set_position(8, 34);
+    chk_notify.set_size(700, 24);
+
+    let _tg_sec = add_label!(&tab_notify, "KÊNH TELEGRAM — BOT CỦA CHÍNH BẠN (TẠO QUA @BOTFATHER):", font_section, (8, 66), (760, 24));
+    let _l_tg_token = add_label!(&tab_notify, "Bot Token:", font_normal, (8, 98), (110, 22));
+    let mut inp_tg_token = Default::default();
+    nwg::TextInput::builder().font(Some(font_normal)).parent(&tab_notify).build(&mut inp_tg_token).expect("input");
+    inp_tg_token.set_position(124, 96);
+    inp_tg_token.set_size(560, 24);
+    set_edit_style(inp_tg_token.handle.hwnd(), ES_PASSWORD);
+    let _l_tg_chat = add_label!(&tab_notify, "Chat ID:", font_normal, (8, 128), (110, 22));
+    let mut inp_tg_chat = Default::default();
+    nwg::TextInput::builder().font(Some(font_normal)).parent(&tab_notify).build(&mut inp_tg_chat).expect("input");
+    inp_tg_chat.set_position(124, 126);
+    inp_tg_chat.set_size(200, 24);
+    let mut btn_tg_fetch = Default::default();
+    nwg::Button::builder().text("Lấy Chat ID").font(Some(font_button)).parent(&tab_notify).build(&mut btn_tg_fetch).expect("btn");
+    btn_tg_fetch.set_position(336, 122);
+    btn_tg_fetch.set_size(130, 32);
+    let mut btn_tg_test = Default::default();
+    nwg::Button::builder().text("Gửi thử Telegram").font(Some(font_button)).parent(&tab_notify).build(&mut btn_tg_test).expect("btn");
+    btn_tg_test.set_position(478, 122);
+    btn_tg_test.set_size(170, 32);
+    let _tg_hint = add_label!(
+        &tab_notify,
+        "Lấy Chat ID: mở Telegram, nhắn 1 tin bất kỳ cho bot của bạn, quay lại bấm \"Lấy Chat ID\" — wizard tự điền Chat ID và hiện tên người gửi ở dòng trạng thái dưới cùng.",
+        font_small, (8, 162), (961, 34)
+    );
+
+    let _z_sec = add_label!(&tab_notify, "KÊNH ZALO — QUA RELAY GOLDEN FARM TRÊN SERVER CỦA BẠN:", font_section, (8, 206), (760, 24));
+    let _l_z_url = add_label!(&tab_notify, "Relay URL:", font_normal, (8, 238), (110, 22));
+    let mut inp_zalo_url = Default::default();
+    nwg::TextInput::builder().font(Some(font_normal)).parent(&tab_notify).build(&mut inp_zalo_url).expect("input");
+    inp_zalo_url.set_position(124, 236);
+    inp_zalo_url.set_size(560, 24);
+    let _l_z_secret = add_label!(&tab_notify, "Relay Secret:", font_normal, (8, 268), (110, 22));
+    let mut inp_zalo_secret = Default::default();
+    nwg::TextInput::builder().font(Some(font_normal)).parent(&tab_notify).build(&mut inp_zalo_secret).expect("input");
+    inp_zalo_secret.set_position(124, 266);
+    inp_zalo_secret.set_size(560, 24);
+    set_edit_style(inp_zalo_secret.handle.hwnd(), ES_PASSWORD);
+    let mut btn_zalo_test = Default::default();
+    nwg::Button::builder().text("Gửi thử Zalo").font(Some(font_button)).parent(&tab_notify).build(&mut btn_zalo_test).expect("btn");
+    btn_zalo_test.set_position(124, 298);
+    btn_zalo_test.set_size(170, 32);
+    let _z_hint = add_label!(
+        &tab_notify,
+        "Relay nhận trạng thái và chuyển tiếp vào Zalo của bạn qua bot Zalo Golden Farm. Tin BẮT ĐẦU gửi qua cả hai kênh; tin CÀI XONG / LỖI trong WinPE chỉ đi qua relay này — máy đang cài phải với tới được địa chỉ relay (cùng LAN / Tailscale).",
+        font_small, (8, 338), (961, 34)
+    );
+
+    let mut btn_notify_save = Default::default();
+    nwg::Button::builder().text("Lưu cấu hình thông báo").font(Some(font_button)).parent(&tab_notify).build(&mut btn_notify_save).expect("btn");
+    btn_notify_save.set_position(8, 388);
+    btn_notify_save.set_size(230, 36);
+    let lbl_notify_status = add_label!(&tab_notify, "", font_normal, (250, 394), (719, 24));
+    let _sec_note = add_label!(
+        &tab_notify,
+        "Token/secret chỉ lưu trong settings.json cạnh wizard và không ghi vào log. Nội dung tin chỉ gồm trạng thái + tên máy — không gửi bất kỳ thông tin đăng nhập nào.",
+        font_small, (8, 432), (961, 30)
+    );
 
     // --- Tab 1, mục 1: tiền đề ---
     let _s1 = add_label!(&tab_src, "1 — KIỂM TRA HỆ THỐNG", font_section, (8, 6), (420, 24));
@@ -4215,6 +4498,29 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
     lay!(txt_guide, GROUP_TAB3, XMode::Fixed, WMode::Grow, Some(FLEX_TABS));
     // Sân tab 4 — "Tài liệu" (v0.7.12): cùng cấu trúc với tab 3.
     lay!(txt_docs, GROUP_TAB4, XMode::Fixed, WMode::Grow, Some(FLEX_TABS));
+    // Sân tab 5 — "Thông báo" (v0.7.27): biểu mẫu cấu hình — ô
+    // nhập nở theo bề ngang, nhãn/nút giữ nguyên; không phần tử
+    // co giãn theo chiều cao.
+    lay!(_s5, GROUP_TAB5, XMode::Fixed, WMode::Fixed, None);
+    lay!(chk_notify, GROUP_TAB5, XMode::Fixed, WMode::Grow, None);
+    lay!(_tg_sec, GROUP_TAB5, XMode::Fixed, WMode::Fixed, None);
+    lay!(_l_tg_token, GROUP_TAB5, XMode::Fixed, WMode::Fixed, None);
+    lay!(inp_tg_token, GROUP_TAB5, XMode::Fixed, WMode::Grow, None);
+    lay!(_l_tg_chat, GROUP_TAB5, XMode::Fixed, WMode::Fixed, None);
+    lay!(inp_tg_chat, GROUP_TAB5, XMode::Fixed, WMode::Fixed, None);
+    lay!(btn_tg_fetch, GROUP_TAB5, XMode::Fixed, WMode::Fixed, None);
+    lay!(btn_tg_test, GROUP_TAB5, XMode::Fixed, WMode::Fixed, None);
+    lay!(_tg_hint, GROUP_TAB5, XMode::Fixed, WMode::Grow, None);
+    lay!(_z_sec, GROUP_TAB5, XMode::Fixed, WMode::Fixed, None);
+    lay!(_l_z_url, GROUP_TAB5, XMode::Fixed, WMode::Fixed, None);
+    lay!(inp_zalo_url, GROUP_TAB5, XMode::Fixed, WMode::Grow, None);
+    lay!(_l_z_secret, GROUP_TAB5, XMode::Fixed, WMode::Fixed, None);
+    lay!(inp_zalo_secret, GROUP_TAB5, XMode::Fixed, WMode::Grow, None);
+    lay!(btn_zalo_test, GROUP_TAB5, XMode::Fixed, WMode::Fixed, None);
+    lay!(_z_hint, GROUP_TAB5, XMode::Fixed, WMode::Grow, None);
+    lay!(btn_notify_save, GROUP_TAB5, XMode::Fixed, WMode::Fixed, None);
+    lay!(lbl_notify_status, GROUP_TAB5, XMode::Fixed, WMode::Grow, None);
+    lay!(_sec_note, GROUP_TAB5, XMode::Fixed, WMode::Grow, None);
 
     // Căn cửa sổ vào vùng làm việc + thêm khung kéo giãn được. Khi
     // màn hình đủ lớn, kích thước client giữ NGUYÊN mốc thiết kế ở
@@ -4232,6 +4538,15 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
     // v0.7.24: nút Core khởi tạo từ settings (defaultCoreProfile)
     // và tự lưu lại mỗi lần bật/tắt — xem persist_core_default.
     let core_default = settings.default_core_profile;
+    // v0.7.27: giá trị tab "Thông báo" khởi tạo từ settings —
+    // điền vào các ô sau khi App dựng xong (như nhãn nút Core).
+    let notify_init = (
+        settings.notify_enabled,
+        settings.telegram_bot_token.clone(),
+        settings.telegram_chat_id.clone(),
+        settings.zalo_relay_url.clone(),
+        settings.zalo_relay_secret.clone(),
+    );
     let shared: SharedRef = Arc::new(Mutex::new(Shared::default()));
     if let Some(e) = &settings_err {
         shared
@@ -4242,7 +4557,7 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
     }
     let app = Rc::new(App {
         notice,
-        tabs, tab_src, tab_opt, tab_guide, tab_docs,
+        tabs, tab_src, tab_opt, tab_guide, tab_docs, tab_notify,
         txt_guide, txt_docs,
         l_os, l_boot, l_data_info, l_power, l_verdict,
         cmb_data, lst_iso, lst_cat, lst_ed,
@@ -4255,6 +4570,8 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
         btn_part_preserve, btn_part_wipe, btn_part_rebuild,
         lbl_disk_cap, cmb_disk, lbl_disk_hint, lst_disk_parts, lbl_disk_warn, lbl_serial_cap, inp_disk_serial,
         lbl_disk_id, lbl_serial_fb,
+        chk_notify, inp_tg_token, inp_tg_chat, inp_zalo_url, inp_zalo_secret,
+        btn_tg_fetch, btn_tg_test, btn_zalo_test, btn_notify_save, lbl_notify_status,
         model: RefCell::new(Model {
             settings,
             exe_dir,
@@ -4276,6 +4593,7 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
             parts_disk: None,
             apply_tweaks: false,
             core_profile: core_default,
+            notify_busy: false,
             busy_ed: false,
             running: false,
             last_clean: false,
@@ -4290,6 +4608,16 @@ fn build_ui() -> (nwg::Window, Rc<App>) {
     if core_default {
         app.btn_core.set_text("Ảnh rút gọn (Tiny11 Core): BẬT");
     }
+    // v0.7.27: điền cấu hình thông báo đã nạp vào các ô của tab 5.
+    app.chk_notify.set_check_state(if notify_init.0 {
+        nwg::CheckBoxState::Checked
+    } else {
+        nwg::CheckBoxState::Unchecked
+    });
+    app.inp_tg_token.set_text(&notify_init.1);
+    app.inp_tg_chat.set_text(&notify_init.2);
+    app.inp_zalo_url.set_text(&notify_init.3);
+    app.inp_zalo_secret.set_text(&notify_init.4);
     finish_build(window, app)
 }
 
@@ -4697,9 +5025,11 @@ fn layout_window(app: &Rc<App>) {
         // (cả bốn trang luôn bằng nhau vì NWG khớp mọi trang con
         // theo cùng một vùng hiển thị của khung, nhưng đo riêng
         // từng trang thì đúng ngay cả khi một trang đang ẩn).
+        // v0.7.27: đo thêm trang "Thông báo" cùng cách.
         for (tab, group) in [
             (&app.tab_guide, GROUP_TAB3),
             (&app.tab_docs, GROUP_TAB4),
+            (&app.tab_notify, GROUP_TAB5),
         ] {
             if let Some(th) = tab.handle.hwnd() {
                 let (tw, thg) = unsafe {
@@ -5762,7 +6092,7 @@ fn refresh(app: &Rc<App>) {
 
 fn refresh_inner(app: &Rc<App>) {
     render_log(app);
-    let (pf, iso_list, catalogue, dl_prog, dl_done, editions, exec_prog, exec_msg, exec_done) = {
+    let (pf, iso_list, catalogue, dl_prog, dl_done, editions, exec_prog, exec_msg, exec_done, notify_done) = {
         let mut s = lock_shared(&app.shared);
         (
             s.preflight.take(),
@@ -5774,6 +6104,7 @@ fn refresh_inner(app: &Rc<App>) {
             s.exec_progress.take(),
             s.exec_msg.take(),
             s.exec_done.take(),
+            s.notify_done.take(),
         )
     };
     if let Some(pf) = pf {
@@ -5888,6 +6219,156 @@ fn refresh_inner(app: &Rc<App>) {
         }
         update_start_enabled(app);
     }
+    if let Some(nd) = notify_done {
+        // Tab "Thông báo" (v0.7.27): thao tác mạng đã kết thúc —
+        // nhả khoá bốn nút TRƯỚC khi hiện kết quả, ở mọi nhánh.
+        set_notify_busy(app, false);
+        match nd {
+            NotifyDone::ChatId(Ok((id, name))) => {
+                app.inp_tg_chat.set_text(&id);
+                app.lbl_notify_status.set_text(&format!(
+                    "Đã lấy Chat ID {} ({}). Bấm \"Lưu cấu hình thông báo\" để ghi lại.",
+                    id, name
+                ));
+                push_log(
+                    &app.shared,
+                    &app.notice.sender(),
+                    &format!("Đã lấy Chat ID Telegram: {} ({}).", id, name),
+                );
+                render_log(app);
+            }
+            NotifyDone::ChatId(Err(e)) => {
+                app.lbl_notify_status.set_text(&format!("Lấy Chat ID thất bại: {}", e));
+            }
+            NotifyDone::Test(channel, Ok(())) => {
+                app.lbl_notify_status.set_text(&format!(
+                    "Đã gửi tin thử qua {} thành công — kiểm tra điện thoại của bạn.",
+                    channel
+                ));
+                push_log(
+                    &app.shared,
+                    &app.notice.sender(),
+                    &format!("Đã gửi tin thử thông báo qua {}.", channel),
+                );
+                render_log(app);
+            }
+            NotifyDone::Test(channel, Err(e)) => {
+                app.lbl_notify_status.set_text(&format!(
+                    "Gửi thử qua {} thất bại: {}",
+                    channel, e
+                ));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tab "Thông báo" (v0.7.27): đọc ô nhập, khoá/nhả nút, các handler
+// ---------------------------------------------------------------------------
+/// Đọc 5 giá trị cấu hình ở tab "Thông báo": (bật?, Bot Token,
+/// Chat ID, Relay URL, Relay Secret) — chuỗi đã cắt khoảng trắng.
+fn notify_inputs(app: &Rc<App>) -> (bool, String, String, String, String) {
+    (
+        app.chk_notify.check_state() == nwg::CheckBoxState::Checked,
+        app.inp_tg_token.text().trim().to_string(),
+        app.inp_tg_chat.text().trim().to_string(),
+        app.inp_zalo_url.text().trim().to_string(),
+        app.inp_zalo_secret.text().trim().to_string(),
+    )
+}
+
+/// Khoá/nhả đồng loạt bốn nút thao tác của tab "Thông báo" trong
+/// lúc một thao tác mạng đang chạy nền. Nhả khoá do `refresh`
+/// gọi khi kết quả về (mọi lối ra của luồng nền đều ghi kết quả,
+/// kể cả panic — xem các `spawn_notify_*`).
+fn set_notify_busy(app: &Rc<App>, busy: bool) {
+    app.model.borrow_mut().notify_busy = busy;
+    let enabled = !busy;
+    app.btn_tg_fetch.set_enabled(enabled);
+    app.btn_tg_test.set_enabled(enabled);
+    app.btn_zalo_test.set_enabled(enabled);
+    app.btn_notify_save.set_enabled(enabled);
+}
+
+fn on_notify_fetch_chat_id(app: &Rc<App>) {
+    if app.model.borrow().notify_busy {
+        return;
+    }
+    let (_, token, _, _, _) = notify_inputs(app);
+    if token.is_empty() {
+        app.lbl_notify_status
+            .set_text("Hãy nhập Bot Token trước, nhắn 1 tin cho bot rồi bấm \"Lấy Chat ID\".");
+        return;
+    }
+    set_notify_busy(app, true);
+    app.lbl_notify_status.set_text("Đang lấy Chat ID từ Telegram...");
+    spawn_notify_fetch_chat_id(app.shared.clone(), app.notice.sender(), token);
+}
+
+fn on_notify_test_telegram(app: &Rc<App>) {
+    if app.model.borrow().notify_busy {
+        return;
+    }
+    let (_, token, chat_id, _, _) = notify_inputs(app);
+    if token.is_empty() || chat_id.is_empty() {
+        app.lbl_notify_status
+            .set_text("Cần có cả Bot Token và Chat ID mới gửi thử Telegram được.");
+        return;
+    }
+    set_notify_busy(app, true);
+    app.lbl_notify_status.set_text("Đang gửi tin thử qua Telegram...");
+    spawn_notify_test_telegram(app.shared.clone(), app.notice.sender(), token, chat_id);
+}
+
+fn on_notify_test_zalo(app: &Rc<App>) {
+    if app.model.borrow().notify_busy {
+        return;
+    }
+    let (_, _, _, url, secret) = notify_inputs(app);
+    if url.is_empty() || secret.is_empty() {
+        app.lbl_notify_status
+            .set_text("Cần có cả Relay URL và Relay Secret mới gửi thử Zalo được.");
+        return;
+    }
+    set_notify_busy(app, true);
+    app.lbl_notify_status.set_text("Đang gửi tin thử qua relay Zalo...");
+    spawn_notify_test_zalo(app.shared.clone(), app.notice.sender(), url, secret);
+}
+
+/// "Lưu cấu hình thông báo": ghi 5 khoá vào settings.json (hàm
+/// dùng chung trong qsu_common::settings — sửa đúng vị trí khoá,
+/// giữ nguyên các khoá khác) ĐỒNG THỜI cập nhật bản settings
+/// trong bộ nhớ, để ca staging bắt đầu ngay sau đó dùng đúng
+/// giá trị vừa lưu mà không cần mở lại wizard.
+fn on_notify_save(app: &Rc<App>) {
+    if app.model.borrow().notify_busy {
+        return;
+    }
+    let (enabled, tg_token, tg_chat, z_url, z_secret) = notify_inputs(app);
+    let exe_dir = app.model.borrow().exe_dir.clone();
+    match qsu_common::settings::persist_notify_keys(
+        &exe_dir, enabled, &tg_token, &tg_chat, &z_url, &z_secret,
+    ) {
+        Ok(()) => {
+            {
+                let mut m = app.model.borrow_mut();
+                m.settings.notify_enabled = enabled;
+                m.settings.telegram_bot_token = tg_token;
+                m.settings.telegram_chat_id = tg_chat;
+                m.settings.zalo_relay_url = z_url;
+                m.settings.zalo_relay_secret = z_secret;
+            }
+            app.lbl_notify_status.set_text("Đã lưu cấu hình thông báo vào settings.json.");
+            push_log(
+                &app.shared,
+                &app.notice.sender(),
+                "Đã lưu cấu hình thông báo (tab Thông báo) vào settings.json.",
+            );
+        }
+        Err(e) => {
+            app.lbl_notify_status.set_text(&format!("Lưu cấu hình thất bại: {}", e));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -5957,6 +6438,14 @@ fn handle_event(app: &Rc<App>, evt: nwg::Event, handle: nwg::ControlHandle) {
                     .set_text(if on { "Ảnh rút gọn (Tiny11 Core): BẬT" } else { "Ảnh rút gọn (Tiny11 Core): TẮT" });
             } else if handle == app.btn_start.handle {
                 on_start(app);
+            } else if handle == app.btn_tg_fetch.handle {
+                on_notify_fetch_chat_id(app);
+            } else if handle == app.btn_tg_test.handle {
+                on_notify_test_telegram(app);
+            } else if handle == app.btn_zalo_test.handle {
+                on_notify_test_zalo(app);
+            } else if handle == app.btn_notify_save.handle {
+                on_notify_save(app);
             }
         }
         nwg::Event::OnListViewItemChanged => {

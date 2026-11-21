@@ -32,7 +32,7 @@
 mod progress;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use progress::ProgressUi;
 use qsu_common::cmd;
@@ -42,6 +42,52 @@ use qsu_common::stage::StageConfig;
 use qsu_common::sys::{self, DriveInfo};
 
 const DATA_MARKER: &str = ".qsu_data_drive";
+
+/// Ngữ cảnh thông báo kết thúc ca cài (v0.7.27): `run()` nạp
+/// vào đây ngay sau khi đọc được stage.json + tạo logger (chỉ
+/// khi stage.json mang token dùng một lần của relay). Mọi lối
+/// ra LỖI của `run()` đều dồn về `main()`, nên `main()` dùng
+/// ngữ cảnh này để gửi tin LỖI trước khi neo màn hình; tin CÀI
+/// XONG do `run()` tự gửi ngay trước lệnh reboot (sau reboot
+/// thì không gửi kịp nữa). Token không bao giờ vào log.
+#[derive(Clone)]
+struct NotifyCtx {
+    relay_url: String,
+    once_token: String,
+    machine: String,
+    log_path: PathBuf,
+}
+
+static NOTIFY_CTX: Mutex<Option<NotifyCtx>> = Mutex::new(None);
+
+/// Gửi tin kết thúc (CÀI XONG / LỖI) qua relay Zalo bằng token
+/// dùng một lần trong stage.json. Best-effort tuyệt đối: chưa
+/// cấu hình thì bỏ qua lặng lẽ; gửi lỗi chỉ ghi log, không đổi
+/// mã thoát, không chặn reboot hay màn hình giữ lỗi.
+fn notify_engine_end(
+    log: &Arc<Logger>,
+    relay_url: &str,
+    once_token: &str,
+    machine: &str,
+    ok: bool,
+    step: &str,
+) {
+    if relay_url.is_empty() || once_token.is_empty() {
+        return;
+    }
+    let text = if ok {
+        qsu_common::notify::text_done(machine)
+    } else {
+        qsu_common::notify::text_error(machine, step)
+    };
+    match qsu_common::notify::relay_send_once(relay_url, once_token, &text) {
+        Ok(()) => log.line("Đã gửi thông báo trạng thái qua relay Zalo."),
+        Err(e) => log.line(&format!(
+            "CẢNH BÁO: gửi thông báo qua relay Zalo thất bại (bỏ qua): {}",
+            e
+        )),
+    }
+}
 
 fn volume_serial(letter: char) -> Option<u32> {
     sys::list_fixed_drives()
@@ -170,10 +216,27 @@ fn main() {
     // diện, không ảnh hưởng luồng cài đặt hay dòng console.
     let ui = ProgressUi::start();
     ui.set_phase("Đang khởi động engine cài đặt", 0);
-    progress::mirror_line("=== QSU WinPEInstall v0.7.26 — engine cài đặt trong WinPE ===");
+    progress::mirror_line("=== QSU WinPEInstall v0.7.27 — engine cài đặt trong WinPE ===");
     let code = run(&ui);
     if code == 0 {
         std::process::exit(0);
+    }
+    // Tin LỖI qua relay Zalo (v0.7.27): mọi lối ra lỗi của run()
+    // đều dồn về đây. Nếu run() đã nạp ngữ cảnh thông báo (stage
+    // có token dùng một lần), gửi một tin LỖI — bước dừng lấy từ
+    // pha hiện tại của màn hình tiến trình — bằng một Logger phụ
+    // mở nối tiếp cùng file log. Best-effort: gửi lỗi không đổi
+    // hành vi neo màn hình ngay dưới đây.
+    if let Some(ctx) = NOTIFY_CTX.lock().ok().and_then(|g| g.clone()) {
+        let log2 = Arc::new(Logger::new(ctx.log_path, None));
+        notify_engine_end(
+            &log2,
+            &ctx.relay_url,
+            &ctx.once_token,
+            &ctx.machine,
+            false,
+            &ui.phase_text(),
+        );
     }
     // LỖI: giữ nguyên trạng thái cuối trên CẢ màn hình lẫn console
     // và KHÔNG thoát — tiến trình neo lại tại đây nên qsu_start.cmd
@@ -240,6 +303,22 @@ fn run(ui: &ProgressUi) -> i32 {
         "Image: {} index {} ({})",
         cfg.image_file, cfg.image_index, cfg.image_name
     ));
+    // Nạp ngữ cảnh thông báo kết thúc cho main() (v0.7.27): chỉ
+    // khi stage.json mang token dùng một lần (wizard đã xin từ
+    // relay lúc staging). Từ đây, bất kỳ lối ra lỗi nào của run()
+    // cũng được main() gửi tin LỖI qua relay trước khi neo màn
+    // hình; lối ra thành công tự gửi tin CÀI XONG ở cuối run().
+    if !cfg.notify_relay_url.is_empty() && !cfg.notify_once_token.is_empty() {
+        if let Ok(mut g) = NOTIFY_CTX.lock() {
+            *g = Some(NotifyCtx {
+                relay_url: cfg.notify_relay_url.clone(),
+                once_token: cfg.notify_once_token.clone(),
+                machine: cfg.computer_name.clone(),
+                log_path: log.path().clone(),
+            });
+        }
+        log.line("Thông báo trạng thái: ĐÃ BẬT qua relay Zalo (token dùng một lần trong stage.json).");
+    }
 
     let drives = sys::list_fixed_drives();
     // Đối chiếu serial ổ Data
@@ -844,6 +923,17 @@ fn run(ui: &ProgressUi) -> i32 {
 
     ui.set_phase("Hoàn tất — sắp khởi động lại", 100);
     ui.mark_complete();
+    // Tin CÀI XONG (v0.7.27): gửi NGAY TRƯỚC lệnh reboot — sau
+    // khi reboot bắt đầu thì không gửi kịp nữa. Best-effort:
+    // gửi lỗi không đổi kết quả ca cài, không chặn reboot.
+    notify_engine_end(
+        &log,
+        &cfg.notify_relay_url,
+        &cfg.notify_once_token,
+        &cfg.computer_name,
+        true,
+        "",
+    );
     log.line("=== WinPEInstall hoàn tất — reboot vào Windows mới ===");
     if cmd::run_capture("wpeutil", &["reboot"]).is_err() {
         // Dự phòng chỉ khi wpeutil không chạy được

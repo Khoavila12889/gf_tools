@@ -10,6 +10,7 @@ pub mod http;
 pub mod iso;
 pub mod json;
 pub mod log;
+pub mod notify;
 pub mod post_install;
 pub mod settings;
 pub mod sha256;
