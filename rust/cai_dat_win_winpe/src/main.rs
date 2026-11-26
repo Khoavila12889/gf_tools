@@ -74,6 +74,22 @@
 //!   admin (net user /logonpasswordchg:no + PasswordNeverExpires)
 //!   — ca thực địa: AutoLogon bị chặn ở màn hình đổi mật khẩu
 //!   thay vì vào thẳng desktop. Áp dụng cả khi mật khẩu trống.
+//!
+//! v0.7.28:
+//! - TIỀN KIỂM EFI: cài theo phân vùng (preserve) trên đĩa GPT
+//!   không có phân vùng EFI System bị chặn NGAY ở build_plan —
+//!   trước format/apply — kèm hộp thoại chỉ rõ hai đường xử lý
+//!   (chọn dòng toàn bộ ổ đĩa để chia lại, hoặc đĩa đã có EFI).
+//!   Ca thực địa 2026-11-26: đĩa Toshiba GPT chỉ có một phân
+//!   vùng thường, apply 100% mới chết ở bcdboot. Phán quyết dùng
+//!   liệt kê của qsu_common::disk (PhysicalDisk::has_efi_partition)
+//!   — cùng nguồn dữ liệu với finalize_boot, không bản sao cục bộ.
+//! - BỐ CỤC: cửa sổ 1000×760 (vừa màn hình 1024×768 của WinPE),
+//!   năm khung nhóm có tiêu đề (Nguồn cài đặt / Phiên bản / Ổ đĩa
+//!   đích / Thông tin thiết lập / Tiến trình và nhật ký), lưới
+//!   thông tin tài khoản nhãn thẳng cột + ô nhập thẳng hàng,
+//!   hàng nút dưới cùng căn phải với BẮT ĐẦU CÀI ĐẶT là nút
+//!   chính duy nhất. Control ID/logic/luồng chạy giữ nguyên.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -1544,6 +1560,15 @@ struct Model {
 
 struct App {
     notice: nwg::Notice,
+    // --- Khung nhóm giao diện (v0.7.28): NWG Frame tự huỷ cửa sổ
+    // khi wrapper bị drop nên PHẢI giữ sống trong App (khác Label —
+    // Drop của Label chỉ gỡ handler). Chỉ là lớp vỏ bố cục, không
+    // mang logic.
+    grp_source: nwg::Frame,
+    grp_edition: nwg::Frame,
+    grp_target: nwg::Frame,
+    grp_setup: nwg::Frame,
+    grp_progress: nwg::Frame,
     // --- Cụm cài đặt (chỉ hiện trong WinPE) ---
     inp_source: nwg::TextInput,
     btn_browse_source: nwg::Button,
@@ -1634,8 +1659,8 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
 
     let mut window = Default::default();
     nwg::Window::builder()
-        .size((1060, 940))
-        .position((110, 40))
+        .size((1000, 760))
+        .position((10, 4))
         .title("Cài Đặt Win = WinPE — Utility Rebuild")
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::MINIMIZE_BOX)
         .build(&mut window)
@@ -1675,6 +1700,23 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
             t
         }};
     }
+    // Khung nhóm có tiêu đề (v0.7.28): Frame (viền) + nhãn tiêu đề
+    // font_section nằm đè lên cạnh trên của khung như groupbox.
+    // Frame phải được tạo TRƯỚC các control trong nhóm (z-order
+    // nằm dưới) và giữ sống trong App (Drop của Frame huỷ cửa sổ).
+    macro_rules! add_group {
+        ($title:expr, $pos:expr, $size:expr) => {{
+            let mut fr = Default::default();
+            nwg::Frame::builder().parent(&window).build(&mut fr).expect("frame");
+            fr.set_position($pos.0, $pos.1);
+            fr.set_size($size.0, $size.1);
+            let mut lbl = Default::default();
+            nwg::Label::builder().text($title).font(Some(f_section)).parent(&window).build(&mut lbl).expect("group title");
+            lbl.set_position($pos.0 + 12, $pos.1 - 9);
+            lbl.set_size(430, 22);
+            (fr, lbl)
+        }};
+    }
 
     // --- Header ---
     let subtitle = if in_winpe {
@@ -1692,27 +1734,34 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
     } else {
         "Môi trường: Windows thường — chế độ CHUẨN BỊ".to_string()
     };
-    let _mode = add_label!(&mode_text, f_normal, (16, 64), (1000, 22));
+    let _mode = add_label!(&mode_text, f_normal, (16, 63), (952, 18));
 
     // ================= Cụm CÀI ĐẶT (WinPE) =================
-    let lbl_s1 = add_label!("1 — NGUỒN CÀI ĐẶT", f_section, (16, 90), (460, 24));
-    let inp_source = add_input!((16, 118), (660, 26));
-    let btn_browse_source = add_button!("Chọn file...", (688, 114), (150, 34));
-    let btn_load_source = add_button!("Nạp nguồn", (846, 114), (162, 34));
+    // Bố cục v0.7.28: năm khung nhóm có tiêu đề, cửa sổ 1000×760
+    // vừa màn hình 1024×768 của WinPE (bản cũ 1060×940 tràn mép
+    // phải + mép dưới). Lề 16, nội dung nhóm lề 28, lưới 8px —
+    // đúng token docs/chuan_giao_dien.md. Control ID/logic giữ
+    // nguyên, chỉ vị trí/kích thước/nhóm thay đổi.
+    let (grp_source, lbl_g1) = add_group!("1 — Nguồn cài đặt", (16, 84), (952, 46));
+    let inp_source = add_input!((28, 98), (592, 28));
+    let btn_browse_source = add_button!("Chọn file...", (628, 96), (150, 32));
+    let btn_load_source = add_button!("Nạp nguồn", (786, 96), (170, 32));
+
+    let (grp_edition, lbl_g2) = add_group!("2 — Phiên bản", (16, 136), (952, 82));
     let lbl_source_info = add_label!(
         "Chọn file .iso hoặc file sources\\install.wim / .esd / .swm trên bất kỳ ổ nào, rồi bấm Nạp nguồn.",
-        f_small, (16, 152), (1008, 20)
+        f_small, (28, 154), (928, 18)
     );
     let mut lst_editions = Default::default();
     nwg::ListBox::builder().parent(&window).build(&mut lst_editions).expect("listbox");
-    lst_editions.set_position(16, 178);
-    lst_editions.set_size(660, 78);
+    lst_editions.set_position(28, 176);
+    lst_editions.set_size(596, 32);
     let lbl_edition_info = add_label!(
         "Danh sách phiên bản trong image sẽ hiện ở đây sau khi nạp nguồn.",
-        f_small, (688, 178), (320, 78)
+        f_small, (636, 176), (320, 32)
     );
 
-    let lbl_s2 = add_label!("2 — ĐÍCH CÀI: PHÂN VÙNG, HOẶC TOÀN BỘ Ổ ĐĨA (XOÁ & CHIA LẠI)", f_section, (16, 264), (700, 24));
+    let (grp_target, lbl_g3) = add_group!("3 — Ổ đĩa đích", (16, 224), (952, 148));
     let mut lst_targets = Default::default();
     nwg::ListView::builder()
         .parent(&window)
@@ -1722,8 +1771,8 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         .build(&mut lst_targets)
         .expect("listview");
     lst_targets.set_headers_enabled(true);
-    lst_targets.set_position(16, 292);
-    lst_targets.set_size(992, 148);
+    lst_targets.set_position(28, 242);
+    lst_targets.set_size(928, 56);
     for (i, (name, w)) in [
         ("Ổ", 44),
         ("Nhãn", 110),
@@ -1732,7 +1781,7 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         ("Trống", 80),
         ("Serial", 90),
         ("Loại", 84),
-        ("Nội dung / Ghi chú", 424),
+        ("Nội dung / Ghi chú", 388),
     ]
     .iter()
     .enumerate()
@@ -1751,15 +1800,15 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         .parent(&window)
         .build(&mut chk_override)
         .expect("checkbox");
-    chk_override.set_position(16, 448);
-    chk_override.set_size(810, 24);
-    let btn_refresh_vols = add_button!("Quét lại ổ đĩa", (846, 444), (162, 32));
+    chk_override.set_position(28, 304);
+    chk_override.set_size(928, 20);
     let lbl_target_info = add_label!(
         "Chưa chọn đích cài. Chọn một phân vùng, hoặc một dòng TOÀN BỘ Ổ ĐĨA để xoá sạch & chia lại từ đầu. Ổ RAM của WinPE (X:) không được liệt kê làm đích.",
-        f_small, (16, 480), (1008, 36)
+        f_small, (28, 332), (740, 22)
     );
+    let btn_refresh_vols = add_button!("Quét lại ổ đĩa", (776, 328), (180, 32));
 
-    let lbl_s3 = add_label!("3 — TUỲ CHỌN", f_section, (16, 524), (460, 24));
+    let (grp_setup, lbl_g4) = add_group!("4 — Thông tin thiết lập", (16, 378), (952, 228));
     let mut chk_format = Default::default();
     nwg::CheckBox::builder()
         .text("Format phân vùng đích trước khi cài (NTFS, nhanh) — xoá sạch dữ liệu trên ổ đích")
@@ -1767,18 +1816,19 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         .parent(&window)
         .build(&mut chk_format)
         .expect("checkbox");
-    chk_format.set_position(16, 552);
-    chk_format.set_size(600, 24);
+    chk_format.set_position(28, 396);
+    chk_format.set_size(928, 20);
     let custom_dir = exe_dir.join("custom");
     let custom_text = if custom_dir.is_dir() {
         "Thư mục custom: CÓ — sẽ copy vào ProgramData\\QSU\\custom của Windows mới"
     } else {
         "Thư mục custom: không có (bỏ qua)"
     };
-    let lbl_custom = add_label!(custom_text, f_small, (628, 554), (396, 22));
-    let lbl_driver_cap = add_label!("Thư mục driver (tuỳ chọn):", f_normal, (16, 584), (170, 22));
-    let inp_driver = add_input!((190, 582), (540, 26));
-    let btn_browse_driver = add_button!("Duyệt...", (742, 580), (150, 32));
+    // Trạng thái thư mục custom nằm ở hàng tiêu đề của nhóm (v0.7.28)
+    let lbl_custom = add_label!(custom_text, f_small, (468, 371), (488, 18));
+    let lbl_driver_cap = add_label!("Thư mục driver (tuỳ chọn):", f_normal, (28, 424), (170, 20));
+    let inp_driver = add_input!((206, 422), (556, 28));
+    let btn_browse_driver = add_button!("Duyệt...", (770, 420), (186, 32));
     let mut chk_unattend = Default::default();
     nwg::CheckBox::builder()
         .text("Tự thiết lập Windows: tài khoản admin, AutoLogon; tự cài UltraViewer, Chrome, 7-Zip (cần mạng)")
@@ -1787,13 +1837,13 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         .check_state(nwg::CheckBoxState::Checked)
         .build(&mut chk_unattend)
         .expect("checkbox");
-    chk_unattend.set_position(16, 618);
-    chk_unattend.set_size(810, 24);
+    chk_unattend.set_position(28, 458);
+    chk_unattend.set_size(928, 20);
     // Ô chọn hồ sơ CORE cho ảnh rút gọn (v0.7.21; định nghĩa lại
-    // ở v0.7.22) — đặt ở dải trống giữa hàng xác nhận serial và
-    // thanh tiến trình, không xô lệch bố cục hiện có. Từ v0.7.22
-    // ô này độc lập với ô autounattend: tick CORE là ca cài đi
-    // đúng công thức WinNTSetup (không unattend/driver/WinRE).
+    // ở v0.7.22) — nằm ngay dưới ô autounattend trong nhóm Thông
+    // tin thiết lập (bố cục v0.7.28). Từ v0.7.22 ô này độc lập
+    // với ô autounattend: tick CORE là ca cài đi đúng công thức
+    // WinNTSetup (không unattend/driver/WinRE).
     let mut chk_core = Default::default();
     nwg::CheckBox::builder()
         .text("Ảnh rút gọn (Tiny11 Core): unattend chỉ pha OOBE (tự tạo tài khoản, khỏi ngồi bấm setup), không inject driver, không WinRE")
@@ -1801,43 +1851,49 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         .parent(&window)
         .build(&mut chk_core)
         .expect("checkbox");
-    chk_core.set_position(16, 749);
-    chk_core.set_size(810, 22);
-    let lbl_comp_cap = add_label!("Tên máy tính:", f_normal, (16, 650), (110, 22));
-    let inp_computer = add_input!((130, 648), (200, 26));
+    chk_core.set_position(28, 482);
+    chk_core.set_size(928, 20);
+    // Lưới thông tin tài khoản (v0.7.28): nhãn căn trái thẳng cột
+    // ở x=28 (cột nhãn rộng 262 cho vừa câu chú thích mật khẩu) và
+    // x=510; ô nhập thẳng hàng ở x=298 và x=668.
+    let lbl_comp_cap = add_label!("Tên máy tính:", f_normal, (28, 510), (262, 20));
+    let inp_computer = add_input!((298, 506), (200, 28));
     inp_computer.set_text("QSU-PC");
-    let lbl_user_cap = add_label!("Tài khoản admin:", f_normal, (346, 650), (130, 22));
-    let inp_user = add_input!((480, 648), (180, 26));
+    let lbl_user_cap = add_label!("Tài khoản admin:", f_normal, (510, 510), (150, 20));
+    let inp_user = add_input!((668, 506), (180, 28));
     inp_user.set_text("Admin");
-    let lbl_pw_cap = add_label!("Mật khẩu (để trống = không đặt mật khẩu):", f_normal, (16, 684), (330, 22));
-    let inp_pw1 = add_input!((352, 682), (170, 26));
+    let lbl_pw_cap = add_label!("Mật khẩu (để trống = không đặt mật khẩu):", f_normal, (28, 542), (262, 20));
+    let inp_pw1 = add_input!((298, 538), (200, 28));
     set_edit_style(inp_pw1.handle.hwnd(), ES_PASSWORD);
-    let lbl_pw2_cap = add_label!("Nhập lại mật khẩu:", f_normal, (538, 684), (140, 22));
-    let inp_pw2 = add_input!((684, 682), (150, 26));
+    let lbl_pw2_cap = add_label!("Nhập lại mật khẩu:", f_normal, (510, 542), (150, 20));
+    let inp_pw2 = add_input!((668, 538), (180, 28));
     set_edit_style(inp_pw2.handle.hwnd(), ES_PASSWORD);
-    let lbl_pw_note = add_label!("(Không ghi vào log.)", f_small, (850, 684), (158, 22));
+    let lbl_pw_note = add_label!("(Không vào log.)", f_small, (856, 542), (100, 20));
 
     // Hàng xác nhận serial cho format (ẩn cho tới khi cần)
-    let lbl_serial = add_label!("", f_normal, (16, 718), (430, 22));
-    let inp_serial = add_input!((450, 716), (170, 26));
-    let btn_confirm_format = add_button!("Xác nhận serial & cài", (632, 714), (240, 32));
+    let lbl_serial = add_label!("", f_normal, (28, 574), (430, 20));
+    let inp_serial = add_input!((466, 570), (190, 28));
+    let btn_confirm_format = add_button!("Xác nhận serial & cài", (664, 568), (292, 32));
 
+    // Nhóm tiến trình + hàng nút dưới cùng căn phải (v0.7.28):
+    // BẮT ĐẦU CÀI ĐẶT là nút chính duy nhất của cửa sổ.
+    let (grp_progress, lbl_g5) = add_group!("5 — Tiến trình và nhật ký", (16, 612), (952, 102));
     let mut bar = Default::default();
     nwg::ProgressBar::builder().parent(&window).build(&mut bar).expect("bar");
-    bar.set_position(16, 776);
-    bar.set_size(660, 16);
+    bar.set_position(28, 626);
+    bar.set_size(664, 14);
     bar.set_range(0..101);
     bar.set_pos(0);
-    let lbl_progress = add_label!("", f_small, (688, 774), (320, 22));
-    let btn_start = add_button!("BẮT ĐẦU CÀI ĐẶT", (688, 798), (320, 44));
+    let lbl_progress = add_label!("", f_small, (700, 624), (256, 18));
+    let btn_start = add_button!("BẮT ĐẦU CÀI ĐẶT", (700, 644), (256, 32));
     qsu_common::ui::make_primary(&btn_start);
-    let btn_reboot = add_button!("Khởi động lại", (688, 850), (156, 38));
-    let btn_close = add_button!("Đóng", (852, 850), (156, 38));
+    let btn_reboot = add_button!("Khởi động lại", (700, 680), (124, 32));
+    let btn_close = add_button!("Đóng", (832, 680), (124, 32));
 
     // ================= Cụm CHUẨN BỊ (Windows thường) =================
     let lbl_prep_explain = add_label!(
         "Module Cài Đặt Win=WinPE dùng để cài Windows NGAY TRONG WinPE: boot máy bằng USB WinPE, chạy file CaiDatWinWinPE.exe từ ổ dữ liệu/USB, chọn ISO hoặc install.wim, chọn phân vùng đích rồi cài. Trong Windows thường module không cài đặt — chỉ chép sẵn công cụ ra ổ bạn chọn.",
-        f_normal, (16, 90), (1008, 66)
+        f_normal, (16, 90), (952, 66)
     );
     let lbl_prep_steps = add_label!(
         "Cách dùng trong WinPE:\n\
@@ -1846,27 +1902,31 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
          3) Mục 1: bấm Chọn file... (trình duyệt file tích hợp của module) để chọn file .iso — module tự mount bằng VirtDisk, không cần PowerShell — hoặc chọn trực tiếp sources\\install.wim/.esd/.swm; cũng gõ thẳng đường dẫn vào ô được. Bấm Nạp nguồn, chọn phiên bản.\n\
          4) Mục 2: chọn phân vùng đích — ổ chứa công cụ và ổ chứa nguồn bị loại trừ mặc định; bật Format chỉ khi muốn xoá sạch ổ đích (phải nhập serial xác nhận).\n\
          5) Mục 3: thư mục driver (inject offline), autounattend (tên máy + tài khoản admin). Bấm BẮT ĐẦU CÀI ĐẶT, xong bấm Khởi động lại.",
-        f_normal, (16, 164), (1008, 128)
+        f_normal, (16, 164), (952, 128)
     );
     let lbl_prep_drive_cap = add_label!("Ổ đích để chép công cụ (USB / ổ dữ liệu):", f_normal, (16, 306), (430, 22));
     let mut cmb_prep_drive = Default::default();
     nwg::ComboBox::builder().parent(&window).build(&mut cmb_prep_drive).expect("combo");
     cmb_prep_drive.set_position(16, 332);
-    cmb_prep_drive.set_size(430, 26);
-    let btn_prep_refresh = add_button!("Quét lại ổ đĩa", (458, 328), (150, 32));
-    let btn_prepare = add_button!("Chuẩn bị: chép công cụ ra ổ đã chọn", (16, 372), (430, 42));
-    let lbl_prep_result = add_label!("", f_normal, (16, 426), (1008, 66));
+    cmb_prep_drive.set_size(430, 28);
+    let btn_prep_refresh = add_button!("Quét lại ổ đĩa", (458, 330), (150, 32));
+    let btn_prepare = add_button!("Chuẩn bị: chép công cụ ra ổ đã chọn", (16, 372), (430, 32));
+    qsu_common::ui::make_primary(&btn_prepare);
+    let lbl_prep_result = add_label!("", f_normal, (16, 412), (952, 60));
     let lbl_prep_note = add_label!(
         "Công cụ sẽ chép CaiDatWinWinPE.exe ra thư mục gốc của ổ đã chọn, kèm WinPEInstall.exe nếu thấy cạnh công cụ này (engine cho luồng wizard tự động — module này không bắt buộc phải có nó).",
-        f_small, (16, 500), (1008, 40)
+        f_small, (16, 480), (952, 36)
     );
 
     // ================= Cụm chung =================
-    let lbl_status = add_label!("Đang khởi tạo...", f_small, (16, 752), (1008, 20));
+    // Ở chế độ WinPE, trạng thái + log nằm trong nhóm 5 (Tiến
+    // trình và nhật ký); ở chế độ Chuẩn bị chúng được dời xuống
+    // dưới cụm chuẩn bị (xem khối bố cục theo chế độ bên dưới).
+    let lbl_status = add_label!("Đang khởi tạo...", f_small, (28, 644), (664, 16));
     let mut txt_log = Default::default();
     nwg::TextBox::builder().font(Some(f_mono)).parent(&window).build(&mut txt_log).expect("log");
-    txt_log.set_position(16, 798);
-    txt_log.set_size(660, 92);
+    txt_log.set_position(28, 664);
+    txt_log.set_size(664, 36);
     set_edit_style(txt_log.handle.hwnd(), ES_READONLY);
 
     let mut notice = Default::default();
@@ -1931,6 +1991,11 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
 
     let app = Rc::new(App {
         notice,
+        grp_source,
+        grp_edition,
+        grp_target,
+        grp_setup,
+        grp_progress,
         inp_source,
         btn_browse_source,
         btn_load_source,
@@ -2000,19 +2065,24 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
 
     // --- Bố cục theo chế độ: ẩn cụm không thuộc chế độ hiện tại ---
     let install_handles: Vec<nwg::ControlHandle> = vec![
-        lbl_s1.handle.clone(),
+        app.grp_source.handle.clone(),
+        lbl_g1.handle.clone(),
         app.inp_source.handle.clone(),
         app.btn_browse_source.handle.clone(),
         app.btn_load_source.handle.clone(),
+        app.grp_edition.handle.clone(),
+        lbl_g2.handle.clone(),
         app.lbl_source_info.handle.clone(),
         app.lst_editions.handle.clone(),
         app.lbl_edition_info.handle.clone(),
-        lbl_s2.handle.clone(),
+        app.grp_target.handle.clone(),
+        lbl_g3.handle.clone(),
         app.lst_targets.handle.clone(),
         app.chk_override.handle.clone(),
         app.btn_refresh_vols.handle.clone(),
         app.lbl_target_info.handle.clone(),
-        lbl_s3.handle.clone(),
+        app.grp_setup.handle.clone(),
+        lbl_g4.handle.clone(),
         app.chk_format.handle.clone(),
         lbl_custom.handle.clone(),
         lbl_driver_cap.handle.clone(),
@@ -2029,6 +2099,8 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
         lbl_pw2_cap.handle.clone(),
         app.inp_pw2.handle.clone(),
         lbl_pw_note.handle.clone(),
+        app.grp_progress.handle.clone(),
+        lbl_g5.handle.clone(),
         app.bar.handle.clone(),
         app.lbl_progress.handle.clone(),
         app.btn_start.handle.clone(),
@@ -2056,9 +2128,13 @@ fn build_ui(exe_dir: PathBuf, in_winpe: bool) -> (nwg::Window, Rc<App>) {
     set_ctrl_visible(&app.btn_confirm_format.handle, false);
     app.btn_reboot.set_enabled(false);
     if !in_winpe {
-        // Chế độ chuẩn bị: đưa vùng log lên gần cụm chuẩn bị cho dễ theo dõi
-        app.txt_log.set_position(16, 580);
-        app.txt_log.set_size(1008, 160);
+        // Chế độ chuẩn bị: đưa vùng trạng thái + log xuống dưới
+        // cụm chuẩn bị cho dễ theo dõi (vị trí WinPE nằm trong
+        // nhóm 5, cụm đó đang ẩn ở chế độ này).
+        app.lbl_status.set_position(16, 652);
+        app.lbl_status.set_size(952, 16);
+        app.txt_log.set_position(16, 524);
+        app.txt_log.set_size(952, 120);
     }
 
     // Trình duyệt file tích hợp: ẩn cho tới khi được mở.
@@ -2563,6 +2639,49 @@ fn build_plan(app: &Rc<App>, _for_format_confirm: bool) -> Option<InstallPlan> {
                     true,
                 ) {
                     return None;
+                }
+            }
+            // --- Tiền kiểm EFI (v0.7.28): đích là PHÂN VÙNG có sẵn
+            // trên đĩa GPT + firmware UEFI mà đĩa KHÔNG có phân
+            // vùng EFI System → bước chốt boot (disk::finalize_boot)
+            // chắc chắn thất bại SAU khi bung ảnh xong (thực địa
+            // 2026-11-26: apply 100% mới chết ở bcdboot "không tìm
+            // thấy phân vùng EFI System ... trên đĩa 0"). Chặn ngay
+            // tại đây — trước format/apply — và nói rõ đường xử lý.
+            // Phán quyết dùng ĐÚNG liệt kê đĩa của qsu_common::disk
+            // (PartKind::Efi theo GUID loại) mà finalize_boot dùng;
+            // đĩa liệt kê dự phòng (from_fallback) có thể thiếu
+            // phân vùng EFI không ký tự ổ nên bỏ qua kiểm tra để
+            // tránh chặn nhầm.
+            if app.model.borrow().uefi {
+                let host_disk = {
+                    let m = app.model.borrow();
+                    m.targets.iter().find_map(|t| match t {
+                        TargetEntry::Disk(d) if d.contains_letter(target.letter) => Some(d.clone()),
+                        _ => None,
+                    })
+                };
+                if let Some(d) = host_disk {
+                    if !d.from_fallback
+                        && d.style == sys::PartitionStyle::Gpt
+                        && !d.has_efi_partition()
+                    {
+                        error_box(
+                            title,
+                            &format!(
+                                "Đĩa chứa phân vùng đích {}: (đĩa {} — {}) là đĩa GPT nhưng KHÔNG có phân vùng EFI System.\n\n\
+                                 Cài theo phân vùng trên đĩa này sẽ không tạo được boot UEFI: bước tạo boot (bcdboot) chắc chắn thất bại sau khi bung ảnh xong.\n\n\
+                                 Cách xử lý:\n\
+                                 • Chọn dòng \"ĐĨA {} — TOÀN BỘ Ổ ĐĨA\" trong danh sách đích để XOÁ & CHIA LẠI TỪ ĐẦU — tool tự tạo phân vùng EFI/MSR/Recovery/Windows (toàn bộ dữ liệu trên đĩa đích sẽ bị xoá), hoặc\n\
+                                 • Chọn một phân vùng đích trên đĩa đã có sẵn phân vùng EFI System.",
+                                target.letter,
+                                d.number,
+                                if d.model.is_empty() { "không rõ model".to_string() } else { d.model.clone() },
+                                d.number,
+                            ),
+                        );
+                        return None;
+                    }
                 }
             }
             let fmt = app.chk_format.check_state() == nwg::CheckBoxState::Checked;

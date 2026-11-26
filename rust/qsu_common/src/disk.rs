@@ -146,6 +146,19 @@ impl PhysicalDisk {
     pub fn contains_letter(&self, letter: char) -> bool {
         self.partitions.iter().any(|p| p.letter == Some(letter))
     }
+    /// Đĩa có phân vùng EFI System hay không — phán quyết theo
+    /// ĐÚNG liệt kê phân vùng (PartKind::Efi theo GUID loại GPT)
+    /// mà `finalize_boot` dùng để tìm phân vùng boot. Dùng cho
+    /// TIỀN KIỂM trước khi cài theo phân vùng (v0.7.28): đích
+    /// preserve trên đĩa GPT không có EFI thì bước chốt boot
+    /// chắc chắn thất bại sau khi bung ảnh — chặn từ đầu thay
+    /// vì để chết ở bcdboot. Lưu ý: đĩa liệt kê bằng đường dự
+    /// phòng (from_fallback) có thể thiếu phân vùng không có
+    /// ký tự ổ (đúng là EFI) — phía gọi phải bỏ qua kiểm tra
+    /// khi from_fallback để tránh chặn nhầm.
+    pub fn has_efi_partition(&self) -> bool {
+        self.partitions.iter().any(|p| p.kind == PartKind::Efi)
+    }
     /// Danh sách mọi phân vùng trên đĩa (mỗi phân vùng một dòng) — dùng
     /// cho cảnh báo "toàn bộ dữ liệu trên các phân vùng này sẽ bị xoá".
     pub fn describe_partitions(&self) -> String {

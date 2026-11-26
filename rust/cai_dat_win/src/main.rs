@@ -3681,7 +3681,14 @@ Từ v0.7.27 wizard có thêm tab "Thông báo": kỹ thuật viên bật thông
 - Tin BẮT ĐẦU do wizard gửi ngay khi staging hoàn tất — máy còn ở Windows hiện tại, mạng đầy đủ — qua cả hai kênh đã cấu hình. Tin CÀI XONG / LỖI do engine trong WinPE gửi và CHỈ đi qua kênh Zalo relay: ngay lúc staging, wizard dùng Relay Secret xin trước một TOKEN DÙNG MỘT LẦN từ relay (hết hạn tối đa 12 giờ, tối đa 3 tin) và ghi token đó vào stage.json; engine dùng token để gửi đúng tin kết thúc của ca. Relay Secret dài hạn và Bot Token Telegram KHÔNG BAO GIỜ vào stage.json hay file log.
 - Nội dung mọi tin chỉ gồm: loại trạng thái (bắt đầu / cài xong / lỗi kèm bước dừng), tên máy và thời gian. Không gửi bất kỳ thông tin đăng nhập nào — không mật khẩu, không ID/mật khẩu công cụ điều khiển từ xa.
 - Mọi lần gửi đều là best-effort với timeout ngắn (8 giây): gửi lỗi chỉ ghi CẢNH BÁO vào log, không chặn ca cài, không đổi mã thoát của engine, không chặn reboot hay màn hình giữ lỗi. Trong WinPE tin chỉ đi được khi WinPE có driver mạng và với tới được địa chỉ relay (cùng LAN / Tailscale); không có mạng thì ca cài vẫn chạy bình thường, chỉ thiếu tin kết thúc.
-- Nút "Lưu cấu hình thông báo" ghi 5 khoá (notifyEnabled, telegramBotToken, telegramChatId, zaloRelayUrl, zaloRelaySecret) vào settings.json tại đúng vị trí khoá, giữ nguyên các khoá khác, đồng thời cập nhật bản cấu hình trong bộ nhớ để ca staging bắt đầu ngay sau đó dùng đúng giá trị vừa lưu."#;
+- Nút "Lưu cấu hình thông báo" ghi 5 khoá (notifyEnabled, telegramBotToken, telegramChatId, zaloRelayUrl, zaloRelaySecret) vào settings.json tại đúng vị trí khoá, giữ nguyên các khoá khác, đồng thời cập nhật bản cấu hình trong bộ nhớ để ca staging bắt đầu ngay sau đó dùng đúng giá trị vừa lưu.
+
+20. TIỀN KIỂM EFI TRƯỚC KHI CÀI THEO PHÂN VÙNG + BỐ CỤC CỬA SỔ MODULE WINPE (v0.7.28)
+
+- Bối cảnh: ca thực địa 2026-11-26, cài bằng module Cài Đặt Win = WinPE trên WinPE USB vào phân vùng C: có sẵn của một đĩa GPT (Toshiba 465.8 GB) chỉ có đúng một phân vùng thường — đĩa KHÔNG có phân vùng EFI System. DISM bung ảnh xong 100% mới thất bại ở bước chốt boot: "không tìm thấy phân vùng EFI System (GUID loại C12A7328-F81F-11D2-BA4B-00A0C93EC93B) trên đĩa 0". Lỗi này thấy trước được hoàn toàn ngay từ lúc chọn đích.
+- Từ v0.7.28, TRƯỚC khi format/bung ảnh, cả module WinPE (ở bước dựng kế hoạch cài) lẫn wizard (ở bước kiểm tra trước staging — chỉ với chế độ preserve và firmware UEFI) đều chạy cùng một tiền kiểm: tìm đĩa vật lý chứa phân vùng đích/OS trong liệt kê của thư viện dùng chung; nếu đĩa là GPT và không có phân vùng EFI System (phán quyết theo loại phân vùng EFI trong liệt kê — cùng nguồn dữ liệu mà bước chốt boot dùng) thì DỪNG NGAY bằng hộp thoại nói rõ đĩa đích chưa có phân vùng EFI nên không tạo được boot UEFI, kèm đường xử lý: chọn dòng TOÀN BỘ Ổ ĐĨA để xoá & chia lại từ đầu (tool tự tạo EFI/MSR/Recovery/Windows), hoặc chọn đích trên đĩa đã có sẵn phân vùng EFI System (ở wizard: chuyển chế độ xoá toàn bộ đĩa hoặc chỉ xoá phân vùng hệ thống).
+- Đĩa liệt kê bằng đường dự phòng (danh sách phân vùng có thể thiếu phân vùng EFI không có ký tự ổ) được BỎ QUA tiền kiểm để tránh chặn nhầm; ca như vậy vẫn còn chốt chặn cuối là bước chốt boot sau khi bung ảnh như trước. Ba chế độ phân vùng, định danh đĩa bằng serial, xác nhận phá huỷ bằng gõ serial và mọi hành vi khác của engine giữ nguyên.
+- Cùng bản: cửa sổ module Cài Đặt Win = WinPE được làm lại bố cục theo chuẩn giao diện chung: thu về 1000×760 cho vừa màn hình 1024×768 của WinPE (bản cũ 1060×940 tràn cả mép phải lẫn mép dưới), năm khung nhóm có tiêu đề — Nguồn cài đặt / Phiên bản / Ổ đĩa đích / Thông tin thiết lập / Tiến trình và nhật ký — lưới thông tin tài khoản với nhãn căn trái thẳng cột và ô nhập thẳng hàng (Tên máy, Tài khoản quản trị, Mật khẩu, Nhập lại mật khẩu), hàng nút dưới cùng căn phải với BẮT ĐẦU CÀI ĐẶT là nút chính duy nhất. Chỉ vị trí/kích thước/nhóm thay đổi; control, logic sự kiện và luồng cài đặt giữ nguyên."#;
 
 // ---------------------------------------------------------------------------
 // Trạng thái giao diện (luồng UI) + dựng cửa sổ
@@ -6946,6 +6953,35 @@ fn on_start_inner(app: &Rc<App>) {
                         kept_lines.join("\n")
                     };
                     rebuild_parts = entries;
+                }
+            }
+            if !wipe && !rebuild && pf.uefi {
+                // --- Tiền kiểm EFI (v0.7.28): chế độ preserve cài
+                // vào phân vùng OS có sẵn; nếu đĩa chứa phân vùng OS
+                // là GPT mà KHÔNG có phân vùng EFI System thì engine
+                // chắc chắn thất bại ở bước chốt boot SAU khi bung
+                // ảnh (finalize_boot không tìm thấy EFI trên đĩa) —
+                // đúng lỗi thực địa 2026-11-26 ở module WinPE. Chặn
+                // ngay ở wizard, trước khi staging/reboot. Phán
+                // quyết dùng liệt kê đĩa của qsu_common::disk
+                // (PartKind::Efi theo GUID loại); đĩa liệt kê dự
+                // phòng (from_fallback) bỏ qua để tránh chặn nhầm.
+                if let Some(d) = pf.disks.iter().find(|d| d.contains_letter(pf.os_letter)) {
+                    if !d.from_fallback
+                        && d.style == PartitionStyle::Gpt
+                        && !d.has_efi_partition()
+                    {
+                        error_box(
+                            "Cài Đặt Windows",
+                            &format!(
+                                "Đĩa chứa phân vùng OS {}: (đĩa {} — {}) là đĩa GPT nhưng KHÔNG có phân vùng EFI System.\n\nChế độ \"Giữ nguyên phân vùng\" (preserve) sẽ không tạo được boot UEFI — quá trình cài chắc chắn thất bại ở bước tạo boot sau khi bung ảnh xong.\n\nCách xử lý: chuyển sang chế độ \"Xoá toàn bộ ổ đĩa\" (chia lại từ đầu — tool tự tạo EFI/MSR/Recovery/Windows) hoặc \"Chỉ xoá phân vùng hệ thống\" (rebuild) cho đĩa này.",
+                                pf.os_letter,
+                                d.number,
+                                if d.model.is_empty() { "không rõ model".to_string() } else { d.model.clone() },
+                            ),
+                        );
+                        return;
+                    }
                 }
             }
         } else if data_letter.is_none() {

@@ -228,3 +228,26 @@ font một lần cho cả tiến trình (rò có chủ đích như quy ước c�
   `ui`; nút Áp dụng mục đã tick là nút chính; hàng nút đồng đều 32.
 - **Engine WinPEInstall:** không đổi mã nguồn; build lại vì thư
   viện chung mở rộng — màn tiến trình và hành vi giữ nguyên.
+
+---
+
+## 7. Cập nhật v0.7.28 — cửa sổ module WinPE
+
+- **Kích thước:** module Cài Đặt Win = WinPE đổi 1060×940 →
+  **1000×760** (vị trí (10,4)) để nằm trọn trong màn hình
+  1024×768 phổ biến của WinPE (bản cũ tràn cả mép phải lẫn
+  mép dưới — ảnh thực địa 2026-11-26). Đây là ngoại lệ có
+  chủ đích so với mục 4.5: riêng module chạy trong WinPE,
+  kích thước cửa sổ phải theo màn hình PE.
+- **Khung nhóm:** năm nhóm nội dung dùng NWG `Frame` + nhãn
+  tiêu đề `font_section` đè lên cạnh trên khung (kiểu
+  groupbox): Nguồn cài đặt / Phiên bản / Ổ đĩa đích / Thông
+  tin thiết lập / Tiến trình và nhật ký. Frame của NWG tự
+  huỷ cửa sổ khi wrapper bị drop nên phải giữ sống trong
+  struct App của module (khác Label — Drop của Label chỉ
+  gỡ handler).
+- **Lưới trường nhập:** nhãn căn trái thẳng cột (cột nhãn
+  x=28, cột nhãn phụ x=510), ô nhập thẳng hàng (x=298 và
+  x=668), ô nhập cao 28, nút cao 32 — đúng token mục 2.3.
+  Hàng nút hành động nằm cuối cửa sổ, căn phải, BẮT ĐẦU
+  CÀI ĐẶT là nút chính duy nhất.

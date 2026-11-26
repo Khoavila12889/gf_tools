@@ -216,7 +216,7 @@ fn main() {
     // diện, không ảnh hưởng luồng cài đặt hay dòng console.
     let ui = ProgressUi::start();
     ui.set_phase("Đang khởi động engine cài đặt", 0);
-    progress::mirror_line("=== QSU WinPEInstall v0.7.27 — engine cài đặt trong WinPE ===");
+    progress::mirror_line("=== QSU WinPEInstall v0.7.28 — engine cài đặt trong WinPE ===");
     let code = run(&ui);
     if code == 0 {
         std::process::exit(0);

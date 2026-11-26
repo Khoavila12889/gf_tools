@@ -7,7 +7,7 @@ là một file `.exe` native độc lập, giao diện tiếng Việt. Mục ti�
 không sao chép mã nguồn, tài nguyên đồ họa hay văn bản của bản gốc (ngoại trừ
 các nhãn nút chức năng — vốn thuần túy mô tả tính năng).
 
-**Phiên bản hiện tại: v0.7.27** — bản chốt trên nhánh `final`
+**Phiên bản hiện tại: v0.7.28** — bản chốt trên nhánh `final`
 (nhánh maintain về sau); xem lịch sử chi tiết trong
 [BUILD_NOTES.md](BUILD_NOTES.md) và tài liệu kiểm thử đầy đủ trong
 [docs/README_FULL.md](docs/README_FULL.md).
